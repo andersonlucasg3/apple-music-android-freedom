@@ -2,6 +2,7 @@ package com.anderson.applemusic.one;
 
 import android.app.Activity;
 import android.app.AlertDialog;
+import android.app.Application;
 import android.content.DialogInterface;
 import android.content.Intent;
 import android.content.pm.PackageInfo;
@@ -53,6 +54,12 @@ public final class OneActivity extends Activity
 
     private static final String TAG = "AppleMusicOne";
     static final String ACTION_INSTALL_STATUS = "com.anderson.applemusic.one.INSTALL_STATUS";
+
+    /** Auth type we ask the engine for: always show the Apple ID page. */
+    private static final String AUTH_TYPE_CLASS =
+            "com.apple.mediaservices.amskit.authentication.AuthenticateRequest$Type";
+    /** Time for the host activity to build its window/ComposeView before we drive it. */
+    private static final long SIGN_IN_SETTLE_MS = 400L;
 
     private static final int COLOR_BG = 0xFF000000;
     private static final int COLOR_SURFACE = 0xFF1C1C1E;
@@ -1282,7 +1289,64 @@ public final class OneActivity extends Activity
 
     // --- account / version ------------------------------------------------------------
 
+    /**
+     * Starts the engine's Apple ID sign-in from our UI.
+     *
+     * <p>The engine has no auth activity: the sign-in is the Compose
+     * {@code AuthenticationDialogAms}, rendered over the engine's {@code MainActivity} (a
+     * {@code StoreBaseActivity}) by its {@code DialogConnectorViewModel}. We start the
+     * engine activity, then by reflection: {@code S()} installs the full-screen
+     * StoreApiDialogs ComposeView (so its home is covered) and
+     * {@code showAMSAuthWithType(Interactive)} opens the AMS dialog, which performs the
+     * sign-in itself. BACK returns to this activity.
+     */
     private void openAccount() {
+        final Application app = getApplication();
+        final ActivityWatcher watcher = new ActivityWatcher(MediaClient.ACCOUNT_ACTIVITY) {
+            @Override
+            void onTarget(Activity activity) {
+                app.unregisterActivityLifecycleCallbacks(this);
+                showAppleIdDialog(activity);
+            }
+        };
+        try {
+            Intent intent = new Intent();
+            intent.setClassName(MediaClient.PACKAGE, MediaClient.ACCOUNT_ACTIVITY);
+            app.registerActivityLifecycleCallbacks(watcher);
+            startActivity(intent);
+        } catch (Throwable t) {
+            app.unregisterActivityLifecycleCallbacks(watcher);
+            Log.e(TAG, "sign-in host unavailable, falling back to the engine UI", t);
+            openEngine();
+        }
+    }
+
+    private void showAppleIdDialog(final Activity host) {
+        main.postDelayed(new Runnable() {
+            @Override
+            public void run() {
+                try {
+                    Class<?> authType = Class.forName(AUTH_TYPE_CLASS);
+                    Object interactive = null;
+                    for (Object value : authType.getEnumConstants()) {
+                        if ("Interactive".equals(((Enum<?>) value).name())) interactive = value;
+                    }
+                    if (interactive == null) throw new IllegalStateException("no Interactive type");
+                    // S(): adds the StoreApiDialogs ComposeView over the engine's screen.
+                    host.getClass().getMethod("S").invoke(host);
+                    // U(): the activity-scoped DialogConnectorViewModel; show the AMS dialog,
+                    // which starts the sign-in itself (AuthenticationDialogAms -> startSignIn).
+                    Object vm = host.getClass().getMethod("U").invoke(host);
+                    vm.getClass().getMethod("showAMSAuthWithType", authType).invoke(vm, interactive);
+                } catch (Throwable t) {
+                    Log.e(TAG, "cannot show the Apple ID dialog, falling back to the engine UI", t);
+                    openEngine();
+                }
+            }
+        }, SIGN_IN_SETTLE_MS);
+    }
+
+    private void openEngine() {
         try {
             Intent intent = new Intent();
             intent.setClassName(MediaClient.PACKAGE, MediaClient.ACCOUNT_ACTIVITY);
@@ -1290,6 +1354,46 @@ public final class OneActivity extends Activity
         } catch (Throwable t) {
             Log.e(TAG, "cannot open the engine account screen", t);
             setMessage("Não foi possível abrir o Apple Music");
+        }
+    }
+
+    /** Detects the engine activity we just started so it can be driven by reflection. */
+    private abstract static class ActivityWatcher implements Application.ActivityLifecycleCallbacks {
+        private final String target;
+
+        ActivityWatcher(String target) {
+            this.target = target;
+        }
+
+        abstract void onTarget(Activity activity);
+
+        @Override
+        public void onActivityCreated(Activity activity, Bundle state) {
+            if (target.equals(activity.getClass().getName())) onTarget(activity);
+        }
+
+        @Override
+        public void onActivityStarted(Activity activity) {
+        }
+
+        @Override
+        public void onActivityResumed(Activity activity) {
+        }
+
+        @Override
+        public void onActivityPaused(Activity activity) {
+        }
+
+        @Override
+        public void onActivityStopped(Activity activity) {
+        }
+
+        @Override
+        public void onActivitySaveInstanceState(Activity activity, Bundle state) {
+        }
+
+        @Override
+        public void onActivityDestroyed(Activity activity) {
         }
     }
 

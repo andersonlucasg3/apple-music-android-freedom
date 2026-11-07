@@ -92,8 +92,31 @@ adb -s emulator-5554 install -r single-apk/out-one/AppleMusic-one-x86.apk    # T
 adb -s <serial> shell am start -n com.apple.android.music/com.anderson.applemusic.one.OneActivity
 ```
 
-O engine continua logado; a tela de login dele abre pelo botão **Conta**
-(`com.apple.android.music/.common.MainActivity`).
+O engine continua logado; o botão **Conta** abre o login do Apple ID (ver **Login**).
+
+## Login (conta Apple)
+
+O engine **não tem activity de autenticação**. O login é o diálogo Compose
+`AuthenticationDialogAms` (`com.apple.mediaservices.amsfacade`), criado pelo
+`DialogConnectorViewModel` da activity. O botão **Conta** faz:
+
+1. inicia `com.apple.android.music.common.MainActivity` (a activity do engine que hospeda
+   o `StoreApiDialogs` — ela herda de `StoreBaseActivity`);
+2. por reflexão chama `S()` na activity: instala a `ComposeView` de `StoreApiDialogs` em
+   tela cheia, cobrindo a home do engine;
+3. chama `U().showAMSAuthWithType(AuthenticateRequest.Type.Interactive)`: o diálogo AMS
+   aparece e é ele que dispara o login (`AuthenticationDialogAms` →
+   `AmsAuthViewModel.startSignIn`).
+
+Resultado: **Conta** abre direto a tela *"Continue com o e-mail ou número de telefone"* do
+Apple ID (não a home do engine); BACK volta para esta UI. Se a reflexão falhar (classe ou
+método ausentes em outro build), o botão cai no comportamento antigo: abre a
+`MainActivity` do engine.
+
+Por que não uma activity/fragment de auth: o manifest do engine não declara nenhuma
+(`SdkAuthActivity`/`SonosAuthActivity` só repassam para a `MainActivity`;
+`SocialWebActivity` é WebView de social), e o diálogo é Compose — não dá para instanciá-lo
+numa `Activity` pura sem AndroidX/Compose no nosso dex.
 
 ## O que está funcional (P0)
 
@@ -111,7 +134,7 @@ O engine continua logado; a tela de login dele abre pelo botão **Conta**
 - **Busca**: `EditText` → `amp-api` com o developer token decifrado do engine (AES/GCM,
   alias `music_token_store_key`), resultados com capa; tocar toca pelo **id cru**.
   Fallback: botão "Abrir a busca do Apple Music" (deep link para `common.MainActivity`).
-- **Conta** abre a `common.MainActivity` do engine.
+- **Conta** abre o login do Apple ID direto (ver **Login**), não a home do engine.
 - **Atualizações**: mostra `Version.NAME (CODE)` e o engine instalado; checa o `updates.json`
   do último release (automático ao abrir, no máximo 1x/24 h; o botão força), compara
   `one-<abi>.versionCode`, baixa o APK da ABI com progresso, confere o SHA-256 e instala pela
@@ -128,6 +151,7 @@ O engine continua logado; a tela de login dele abre pelo botão **Conta**
 | `emulator-5554` (TV x86, API 34, D-pad) | browse (Home/Radio/Library e prateleiras), D-pad (direita/baixo/ENTER) tocando, mini player, player cheio (botão Tocando), busca (HTTP 200, 18 resultados, id cru `617154366` tocando). Playback tocou de verdade no x86 (`state=PLAYING`), não ficou em BUFFERING. Evidências `evidence/one-tv-0*.png`. |
 | Carro `100.74.124.38:5555` | não estava online; build arm32 gerado e não instalado. |
 | `RXCX100BZ5J` + `emulator-5554` (1.8.0/10800) | instalado por cima (versionCode 1614 igual, cert igual): segue logado e tocando (`state=PLAYING`). Botão **Atualizações** mostra `Instalada: 1.8.0 (10800)` e "Sem atualização" lendo o `updates.json` real da `apps-1.7.0`, que ainda não tem `one-*` (ausência tratada sem crashar). Evidências `.pipeline/one-update-phone-0*.png` e `.pipeline/one-update-tv-0*.png`. Download/instalação de um release com `one-*` ainda não exercitados (1.8.0 não publicado). |
+| `RXCX100BZ5J` + `emulator-5554` (1.8.2/10802) | **Conta** abre o login do Apple ID direto — "Continue com o e-mail ou número de telefone", WebView AMS carregada, sem a home do engine; X + BACK volta para esta UI com o catálogo carregado; busca HTTP 200 (`daft`, 18 resultados) no emulador depois de voltar; `logcat -b crash` vazio nos dois. Evidências `evidence/one-login-tv-0*.png` e `evidence/one-login-phone-0*.png`. Login completo (senha/2FA) não exercitado: a senha não está no repo e as duas contas já estavam logadas. |
 
 ## Limitações / P1
 
@@ -148,5 +172,9 @@ O engine continua logado; a tela de login dele abre pelo botão **Conta**
   possível corrida do engine, não da UI.
 - Foco inicial no D-pad pode cair na barra de topo antes de o conteúdo chegar; as abas
   têm `OnKeyListener` para DOWN entrar no conteúdo.
+- **Login**: o diálogo AMS é hospedado pela `MainActivity` do engine (única com o
+  `StoreApiDialogs`); a home dela fica atrás da `ComposeView` em tela cheia e reaparece se o
+  usuário fechar o diálogo antes de dar BACK. O fluxo de senha/2FA do Apple ID não é
+  exercitado automaticamente (a senha não está no repo).
 - **Assinatura**: os APKs saem com o cert Morphe; sem ele o `install -r` falha e a conta
   seria perdida ao desinstalar.
