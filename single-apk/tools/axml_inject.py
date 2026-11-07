@@ -34,6 +34,7 @@ RES_XML_END_ELEMENT_TYPE = 0x0103
 UTF8_FLAG = 0x100
 SORTED_FLAG = 0x1
 
+TYPE_REFERENCE = 0x01
 TYPE_STRING = 0x03
 TYPE_BOOL = 0x12
 NO_ENTRY = 0xFFFFFFFF
@@ -179,7 +180,7 @@ def end_element(name_idx, line=0):
                        NO_ENTRY, name_idx)
 
 
-def inject(data, activity_class, label=None):
+def inject(data, activity_class, label=None, theme_res_id=None):
     if rd16(data, 0) != RES_XML_TYPE:
         raise ValueError("not a binary XML file")
     header_size = rd16(data, 2)
@@ -229,6 +230,13 @@ def inject(data, activity_class, label=None):
         if label_attr >= 0:
             label_value = pool.add(label)
             attrs.append((ns_idx, label_attr, label_value, TYPE_STRING, label_value))
+    if theme_res_id is not None:
+        # Framework style reference (e.g. @android:style/Theme.Material.NoActionBar).
+        # "theme" is already in the engine's manifest pool (resource map -> 0x01010000).
+        theme_attr = pool.index_of("theme")
+        if theme_attr < 0:
+            raise ValueError("android:theme attribute name missing from the pool")
+        attrs.append((ns_idx, theme_attr, NO_ENTRY, TYPE_REFERENCE, theme_res_id))
 
     insert = b"".join([
         start_element(pool.index_of("activity"), attrs),
@@ -255,6 +263,8 @@ def main():
     ap.add_argument("--out", dest="out")
     ap.add_argument("--activity", default="com.anderson.applemusic.probe.ProbeActivity")
     ap.add_argument("--label", default=None)
+    ap.add_argument("--theme", default=None,
+                    help="framework style resource id for android:theme (e.g. 0x0103022e)")
     ap.add_argument("--inspect", action="store_true")
     args = ap.parse_args()
 
@@ -277,7 +287,8 @@ def main():
 
     if not args.out:
         ap.error("--out is required unless --inspect is used")
-    out, pool = inject(data, args.activity, args.label)
+    theme = int(args.theme, 0) if args.theme else None
+    out, pool = inject(data, args.activity, args.label, theme)
     open(args.out, "wb").write(out)
     print("wrote %s (%d bytes, pool strings %d)" % (args.out, len(out), pool.count))
     return 0
