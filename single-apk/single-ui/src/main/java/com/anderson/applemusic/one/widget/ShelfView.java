@@ -19,10 +19,14 @@ public final class ShelfView extends LinearLayout {
     private final LinearLayout cards;
 
     public ShelfView(Context context, String title) {
+        this(context, title, 0);
+    }
+
+    public ShelfView(Context context, String title, int icon) {
         super(context);
         setOrientation(VERTICAL);
 
-        header = new SectionHeader(context, title);
+        header = new SectionHeader(context, title, icon);
         addView(header);
 
         HorizontalScrollView scroll = new HorizontalScrollView(context);

@@ -47,8 +47,8 @@ public class CollectionScreen implements ChildSink {
     public static final int GRID = 1;
 
     private static final int BROWSE = 0;
-    private static final int ALBUM = 1;
-    private static final int PLAYLIST = 2;
+    public static final int ALBUM = 1;
+    public static final int PLAYLIST = 2;
 
     /** One level of the stack: either a browse node or a catalogue album/playlist. */
     private static final class Node {
@@ -193,6 +193,17 @@ public class CollectionScreen implements ChildSink {
         stack.clear();
         generation++;
         push(new Node(parentId, title, "", BROWSE, null));
+    }
+
+    /**
+     * Starts directly at an album/playlist that only has a library persistent id: the track
+     * list is still resolved by name and "Tocar" uses the library id when that fails.
+     */
+    public void bindCollection(int kind, String title, String subtitle, String libraryId) {
+        stack.clear();
+        generation++;
+        push(new Node(libraryId, title, subtitle,
+                kind == PLAYLIST ? PLAYLIST : ALBUM, null));
     }
 
     private Node top() {
@@ -567,8 +578,9 @@ public class CollectionScreen implements ChildSink {
     private void choose(MediaClient.Item item) {
         String last = lastSegment(item.id);
         boolean library = item.id.contains("/library/");
-        // Catalogue ids (Home/Rádio shelves) open the detail stack; library ids stay in the
-        // browse tree because their persistent ids are not catalogue ids.
+        // Catalogue ids (Home/Rádio shelves) open the detail stack; library ids carry only
+        // the persistent id, so they resolve the catalogue id by name and open the same
+        // rich screen, falling back to the browse level when the name is not in the store.
         if (!library && last.startsWith("3-")) {
             host.openAlbum(last.substring(2), item.title, item.subtitle, item.artworkUri);
             return;
@@ -581,17 +593,19 @@ public class CollectionScreen implements ChildSink {
             host.openArtist(last.substring(2), item.title, item.artworkUri);
             return;
         }
+        if (library && last.startsWith("6-")) {
+            resolveArtist(item);
+            return;
+        }
         if (last.startsWith("3-")) {
-            push(new Node(item.id, item.title, item.subtitle, ALBUM,
-                    library ? null : last.substring(2)));
+            resolveAlbum(item);
             return;
         }
         if (last.startsWith("4-")) {
-            push(new Node(item.id, item.title, item.subtitle, PLAYLIST,
-                    library ? null : last.substring(2)));
+            resolvePlaylist(item);
             return;
         }
-        if (item.browsable || (library && last.startsWith("6-"))) {
+        if (item.browsable) {
             push(new Node(item.id, item.title, item.subtitle, BROWSE, null));
             return;
         }
@@ -600,6 +614,71 @@ public class CollectionScreen implements ChildSink {
             return;
         }
         host.status("Item não reproduzível");
+    }
+
+    /** Library artist ({@code 6-}): catalogue id by name, browse albums as the fallback. */
+    private void resolveArtist(final MediaClient.Item item) {
+        final Node source = top();
+        host.status("Abrindo " + item.title + "…");
+        catalog.findArtist(item.title, new CatalogSearch.MatchCallback() {
+            @Override
+            public void onMatch(CatalogSearch.Result match) {
+                if (top() != source) return;
+                host.openArtist(match.id, item.title,
+                        match.artworkUrl != null ? match.artworkUrl : item.artworkUri);
+            }
+
+            @Override
+            public void onFailure(String message) {
+                if (top() != source) return;
+                host.status("");
+                push(new Node(item.id, item.title, item.subtitle, BROWSE, null));
+            }
+        });
+    }
+
+    /** Library album ({@code 3-}): catalogue track list by name, browse level as fallback. */
+    private void resolveAlbum(final MediaClient.Item item) {
+        final Node source = top();
+        host.status("Abrindo " + item.title + "…");
+        catalog.findAlbumMatch(item.title, item.subtitle, new CatalogSearch.MatchCallback() {
+            @Override
+            public void onMatch(CatalogSearch.Result match) {
+                if (top() != source) return;
+                host.openAlbum(match.id, item.title, item.subtitle,
+                        match.artworkUrl != null ? match.artworkUrl : item.artworkUri);
+            }
+
+            @Override
+            public void onFailure(String message) {
+                if (top() != source) return;
+                host.status("");
+                push(new Node(item.id, item.title, item.subtitle, ALBUM, null));
+            }
+        });
+    }
+
+    /** Library playlist ({@code 4-}): catalogue track list by name, browse as fallback. */
+    private void resolvePlaylist(final MediaClient.Item item) {
+        final Node source = top();
+        host.status("Abrindo " + item.title + "…");
+        catalog.findPlaylistMatch(item.title, item.subtitle,
+                new CatalogSearch.MatchCallback() {
+                    @Override
+                    public void onMatch(CatalogSearch.Result match) {
+                        if (top() != source) return;
+                        host.openPlaylist(match.id, item.title, item.subtitle,
+                                match.artworkUrl != null ? match.artworkUrl
+                                        : item.artworkUri);
+                    }
+
+                    @Override
+                    public void onFailure(String message) {
+                        if (top() != source) return;
+                        host.status("");
+                        push(new Node(item.id, item.title, item.subtitle, PLAYLIST, null));
+                    }
+                });
     }
 
     /** Breadcrumb back: false when the screen is already at its tab root. */

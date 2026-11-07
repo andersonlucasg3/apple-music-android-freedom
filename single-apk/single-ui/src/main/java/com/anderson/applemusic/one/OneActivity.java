@@ -120,6 +120,7 @@ public final class OneActivity extends Activity
 
     private HomeScreen homeScreen;
     private CollectionScreen tabCollection;
+    private LibraryScreen libraryScreen;
     private FrameLayout collectionHost;
     private CollectionScreen overlayCollection;
     private FrameLayout detailHost;
@@ -482,16 +483,19 @@ public final class OneActivity extends Activity
             screenHost.addView(view, new FrameLayout.LayoutParams(
                     ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
             homeScreen.bind(tab);
-        } else {
-            if (kind == KIND_RADIO) {
-                tabCollection = new RadioScreen(this, this, artwork, catalog);
-            } else {
-                tabCollection = new LibraryScreen(this, this, artwork, catalog);
-            }
+        } else if (kind == KIND_RADIO) {
+            tabCollection = new RadioScreen(this, this, artwork, catalog);
             view = tabCollection.view();
             screenHost.addView(view, new FrameLayout.LayoutParams(
                     ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
             tabCollection.bind(tab.id, label(tab));
+        } else {
+            libraryScreen = new LibraryScreen(this, this, artwork, catalog);
+            libraryScreen.setDownFocusId(miniPlayer.getId());
+            view = libraryScreen.view();
+            screenHost.addView(view, new FrameLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+            libraryScreen.bind(tab.id, label(tab));
         }
         setStatus("Carregando " + label(tab) + "…");
     }
@@ -504,6 +508,10 @@ public final class OneActivity extends Activity
         if (tabCollection != null) {
             tabCollection.dispose();
             tabCollection = null;
+        }
+        if (libraryScreen != null) {
+            libraryScreen.dispose();
+            libraryScreen = null;
         }
         screenHost.removeAllViews();
     }
@@ -630,6 +638,21 @@ public final class OneActivity extends Activity
         overlayCollection.setExitOnRootBack(true);
         collectionHost.setVisibility(View.VISIBLE);
         overlayCollection.bind(parentId, title);
+        setStatus("");
+    }
+
+    @Override
+    public void openLibraryCollection(int kind, String title, String subtitle,
+                                      String libraryId) {
+        closeCollectionOverlay();
+        overlayCollection = new CollectionScreen(this, this, artwork, catalog,
+                CollectionScreen.LIST, Icons.NOTE);
+        collectionHost.removeAllViews();
+        collectionHost.addView(overlayCollection.view(), new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+        overlayCollection.setExitOnRootBack(true);
+        collectionHost.setVisibility(View.VISIBLE);
+        overlayCollection.bindCollection(kind, title, subtitle, libraryId);
         setStatus("");
     }
 
@@ -816,6 +839,7 @@ public final class OneActivity extends Activity
             playerScreen.update(snapshot);
         }
         if (tabCollection != null) tabCollection.updatePlayback(snapshot);
+        if (libraryScreen != null) libraryScreen.updatePlayback(snapshot);
         if (overlayCollection != null) overlayCollection.updatePlayback(snapshot);
         if (detailScreen != null) detailScreen.updatePlayback(snapshot);
     }
@@ -1130,7 +1154,8 @@ public final class OneActivity extends Activity
     }
 
     private boolean backInTabScreen() {
-        return tabCollection != null && tabCollection.back();
+        if (tabCollection != null && tabCollection.back()) return true;
+        return libraryScreen != null && libraryScreen.back();
     }
 
     /**

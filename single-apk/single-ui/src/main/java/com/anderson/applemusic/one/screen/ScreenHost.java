@@ -46,6 +46,13 @@ public interface ScreenHost {
 
     void openCollection(String title, String parentId, boolean grid);
 
+    /**
+     * Opens the collection browser at an album/playlist that only exists in the library:
+     * the tracks still come from the catalogue by name and "Tocar" degrades to the
+     * library id when that resolution fails.
+     */
+    void openLibraryCollection(int kind, String title, String subtitle, String libraryId);
+
     /** Opens the catalogue detail stack at an artist/album/playlist/song id. */
     void openArtist(String id, String name, String artworkUrl);
 

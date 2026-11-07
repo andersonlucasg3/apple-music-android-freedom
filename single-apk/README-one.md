@@ -232,9 +232,12 @@ Com targetSdk 36 o *predictive back* vem ligado: o sistema deixa de chamar
 - **Início**: hero da primeira prateleira (capa, “EM DESTAQUE”, título display, Tocar),
   prateleiras horizontais com cards de capa e “Ver tudo” como card com chevron;
   carregamento com skeleton; “Tocar agora” quando o nó é uma lista de reproduzíveis.
-- **Biblioteca / Rádio**: telas próprias (`LibraryScreen` em lista com chevron,
-  `RadioScreen` em grade de estações), com breadcrumb, botão **‹** e drill-down; “Ver tudo”
-  de uma prateleira abre o `CollectionScreen` em overlay com o mesmo tratamento.
+- **Biblioteca**: tela própria com contagem por categoria, filtro local, linha
+  **Aleatória** e seções (Adições Recentes, Playlists, Artistas, Álbuns) com cards,
+  “Ver tudo” e ícone por seção; artista/álbum/playlist de biblioteca abrem as telas de
+  detalhe resolvendo o id de catálogo pelo nome. Rádio continua em grade de estações
+  (`RadioScreen`), com breadcrumb, botão **‹** e drill-down; “Ver tudo” de uma prateleira
+  abre o `CollectionScreen` em overlay com o mesmo tratamento.
 - **Navegação hierárquica**: artista → álbuns (browse), álbum → faixas e playlist → faixas
   (amp-api), com **Tocar** a coleção inteira e toque numa faixa que já começa nela. Detalhes
   de ids e degradação na seção **Navegação hierárquica**.
@@ -268,7 +271,8 @@ Com targetSdk 36 o *predictive back* vem ligado: o sistema deixa de chamar
   álbum a partir de uma faixa rola e destaca aquela faixa.
 - **Detalhe a partir de qualquer ponto**: cards do Início/Rádio e “Ver tudo” com id de
   catálogo (`3-` álbum, `4-` playlist, `6-` artista) abrem a tela de detalhe; itens de
-  biblioteca (persistentId, sem catálogo) continuam no browse e estações (`9-`) tocam.
+  biblioteca (só `persistentId`) resolvem o id de catálogo pelo nome e abrem a mesma tela;
+  estações (`9-`) tocam.
 - **Conta**: com sessão ativa, mostra o **perfil** do engine (avatar com a inicial,
   nome, Apple ID e assinatura); sem sessão, mostra o convite e o botão oficial de login
   do Apple ID (fluxo acima). O estado é relido a cada abertura do painel.
@@ -348,29 +352,33 @@ cada nó e loga id/título/subtítulo/flags; os logs estão resumidos na tabela.
 |---|---|---|
 | faixas do álbum | `/v1/catalog/{sf}/albums/{id}?include=tracks&limit[tracks]=100` | Aqua (Angra) → `1704078587`, 10 faixas |
 | faixas da playlist | `/v1/catalog/{sf}/playlists/{id}?include=tracks&limit[tracks]=100` | Backstreet Boys: essenciais → `pl.331a…`, 22 faixas |
-| álbuns do artista (medido, **não usado**) | `/v1/catalog/{sf}/artists/{id}?include=albums&limit[albums]=50` | AC/DC → `5040714`, 26 álbuns |
+| busca de artista (1.9.5) | `/v1/catalog/{sf}/search?term=<nome>&types=artists&limit=8` | AC/DC → `5040714` (mesmo id nas lojas br/us) |
+| álbuns do artista (1.9.5) | `/v1/catalog/{sf}/artists/{id}?include=albums&limit[albums]=50` | AC/DC → `5040714`, 26 álbuns (br) / 25 (us) |
 
-O nível artista → álbuns é o único que fica **só no browse** (a assinatura do nó do artista
-já devolve os álbuns); a chamada de artista na amp-api foi medida como plano B, mas não
-entrou no código para não manter um caminho morto.
+O nível artista → álbuns existe nos dois caminhos: a assinatura do nó do artista devolve os
+álbuns da **biblioteca** (fallback sem rede) e, desde a 1.9.5, o toque resolve o artista
+por nome e abre o `DetailScreen` com todos os álbuns + músicas principais.
 
-O id de catálogo de um álbum/playlist **não** vem no browse, então ele é resolvido por
-nome: `/v1/catalog/{sf}/search?types=albums|playlists&limit=8` com o título e o
+O id de catálogo de um artista/álbum/playlist **não** vem no browse, então ele é resolvido
+por nome: `/v1/catalog/{sf}/search?types=artists|albums|playlists&limit=8` com o título e o
 artista/curador do item, e a escolha exige título igual (sem diferenciar caixa/espaços,
 ignorando os sufixos “ - Single”/“ - EP” e qualificadores como “(Deluxe Version)” que a
 biblioteca acrescenta) e, quando existe, o mesmo artista. Sem correspondência exata, a tela
-**degrada**: mostra “Faixas indisponíveis” e o **Tocar** toca a coleção pelo id de
-biblioteca (fluxo que já funcionava). Playlist criada pelo usuário não existe no catálogo —
-é o caso de degradação real medido (`Músicas favoritas`). O storefront/idioma são os do
-device (`br`/`pt-BR` no celular, `us`/`en-US` na TV).
+**degrada**: artista abre o browse dos álbuns da biblioteca; álbum/playlist mostram
+“Faixas indisponíveis” e o **Tocar** toca a coleção pelo id de biblioteca (fluxo que já
+funcionava). Playlist criada pelo usuário não existe no catálogo — é o caso de degradação
+real medido (`Músicas favoritas`). O storefront/idioma são os do device (`br`/`pt-BR` no
+celular, `us`/`en-US` na TV).
 
 ### Implementação
 
 `CollectionScreen` passou a ter uma pilha de níveis com dois tipos de nó: **browse**
 (assinatura no engine) e **álbum/playlist** (faixas da amp-api). Regras de clique:
 
-- id `.../artists/6-…`, `.../albums/3-…` ou `.../playlists/4-…` sob `/library` → desce um
-  nível (artista assina o nó, álbum/playlist vai para a amp-api);
+- id `.../artists/6-…`, `.../albums/3-…` ou `.../playlists/4-…` sob `/library` → resolve o
+  catálogo pelo nome e abre o `DetailScreen`; sem match, o artista desce para o browse dos
+  álbuns e álbum/playlist abrem `CollectionScreen.bindCollection(...)`, que mantém a
+  mensagem “Faixas indisponíveis” e o **Tocar** pelo id de biblioteca;
 - id de catálogo (`3-<catalogId>`, `4-pl.…`, `6-<artistId>`) fora de `/library` → abre o
   `DetailScreen` pelo id direto, sem busca por nome;
 - **Tocar** toca a coleção inteira: `playFromMediaId(<id de catálogo>)` monta a fila do
@@ -408,6 +416,45 @@ que o código faz hoje. Todas devolvem **HTTP 200** e os campos abaixo em `attri
   `TrackRow` + `setEmphasis` para a faixa em foco, `SectionHeader`, `Pill`, `Skeleton`,
   `EmptyState`); falha de um nível mostra `EmptyState` + “Tentar de novo”.
 
+### Biblioteca (1.9.5)
+
+Medido no device (engine 7.0.0) com `adb logcat -s AppleMusicOne` e `uiautomator dump`: o
+nó `__AUTO_ROOT__/library` devolve **5 filhos** e cada um virou uma **seção** (o tipo sai
+do último segmento do id, então os títulos em inglês da TV funcionam sem id fixo):
+
+| Nó | Filhos medidos | Arte no browse | O que a Biblioteca mostra | Toque |
+|---|---|---|---|---|
+| `.../library/songs` (Aleatória) | `playable`, 0 filhos | — | linha **Aleatória** (“Tocar a biblioteca inteira”) | `playFromMediaId(__AUTO_ROOT__/library/songs)` → fila 101 (biblioteca embaralhada) |
+| `.../library/recently_added` | 12 (álbuns e playlists) | 12/12 | seção “Adições Recentes” (20 primeiros + **Ver tudo**) | resolve título+artista/curador → `DetailScreen`; sem match → lista de faixas degradada |
+| `.../library/playlists` | 18 | 18/18 | seção “Playlists” | idem; playlist do usuário degrada com **Tocar** pelo id de biblioteca |
+| `.../library/artists` | 93 | **0/93** | seção “Artistas” (inicial em um disco quando não há capa) | resolve o artista por nome (`/search?types=artists`) → `DetailScreen` com álbuns + músicas principais; sem match → browse dos álbuns da biblioteca |
+| `.../library/albums` | 281 | 281/281 | seção “Álbuns” | resolve título+artista (`/search?types=albums`) → `DetailScreen` do álbum com faixas, duração, gravadora e **Tocar** |
+
+- **Cabeçalho**: título + contagem das categorias já carregadas (“12 recentes · 18
+  playlists · 93 artistas · 281 álbuns”), ícone por seção (`SectionHeader` com glifo) e
+  contagem ao lado de cada seção; `Skeleton.rows` no carregamento e `EmptyState` +
+  “Tentar de novo” quando o nó raiz falha. Cada seção mostra placeholders até os filhos
+  chegarem.
+- **Busca local**: o campo “Filtrar artistas, álbuns e playlists” filtra **o que já foi
+  carregado** (sem rede; medido: `backstreet` → 1 resultado, zero chamadas amp-api),
+  agrupa por seção com contagem e abre o mesmo detalhe; BACK limpa o filtro antes de sair
+  da aba. Comparação sem caixa/acento (`Normalizer` NFD).
+- **“Ver tudo”** abre o `CollectionScreen` do nó; os itens de biblioteca ali também
+  resolvem o id de catálogo e abrem o `DetailScreen` (antes só desciam o browse: artista
+  listava os álbuns da biblioteca, álbum/playlist mostravam faixas sem capa/metadados).
+- **D-pad (TV)**: DOWN entra no filtro → linha Aleatória → primeira seção; dentro das
+  seções DOWN vai para a **próxima seção** (`nextFocusDown` encadeado) e só a última
+  (Álbuns) desce para o mini player; LEFT/RIGHT percorrem a fileira. Medido:
+  “Ver tudo 93 itens” (Artistas) → ENTER → `AC/DC` (`/us/search?types=artists` →
+  `/us/artists/5040714`, 25 álbuns).
+- **Degradação sem quebrar**: quando o nome não está na loja, o toque continua no caminho
+  antigo — álbum/playlist abrem `CollectionScreen` no modo “sem lista de faixas” com
+  **Tocar** pelo id de biblioteca (`.../library/playlists/4-…`, fila 4 medida), artista
+  abre o browse dos álbuns da biblioteca.
+- **Limites da fonte**: artistas não têm capa na árvore (0/93), então a lista usa a
+  inicial; “Aleatória” não tem lista de faixas (`/library/songs` = 0 filhos), por isso
+  não existe categoria “Músicas” — só o atalho que toca a biblioteca embaralhada.
+
 ## Validado
 
 | Device | Resultado |
@@ -423,6 +470,8 @@ que o código faz hoje. Todas devolvem **HTTP 200** e os campos abaixo em `attri
 | `emulator-5554` (TV x86, 1.9.3, navegação) | Instalado por cima. Biblioteca → **Artists** (93, títulos em inglês na TV) → **Avenged Sevenfold** (9 álbuns) → **Hail to the King (Deluxe Version)** (12 faixas; id de catálogo US `672046420` resolvido pelo título base) → **Tocar** = `queue size=12` (22), metadata `Shepherd of Fire`; 3ª (`Doing Time`, `skipToQueueItem 2`) → `PLAYING`; **Playlists** → **Backstreet Boys Essentials** (22 faixas) → Tocar = `queue size=22`; 3ª (`Quit Playing Games (With My Heart)`) → `PLAYING`; lista sempre começa na faixa 1 (scroll reset); `logcat -b crash` vazio. |
 | `RXCX100BZ5J` (arm64, 1.9.4, detalhes) | Instalado por cima. Busca **Angra** (18 resultados; artista agora com gênero “Metal”, sem `["Metal"]`) → **artista** `HTTP 200 /br/artists/192030844?include=albums&limit[albums]=50` (27 álbuns) + `/view/top-songs` (10, com álbum e duração) → **Rebirth** `HTTP 200 /br/albums/1689475163?include=tracks,artists` (ano 2001, 10 faixas, Hard rock, gravadora/copyright, durações) → **Tocar** = `playFromMediaId 1689475163`, `queue size=10` (20), metadata `In Excelsis`; 3ª faixa (`skipToQueueItem 2`) → `Millennium Sun`, linha em accent; link **Angra** no álbum → `Artista` com breadcrumb `Rebirth › Angra`; BACK volta álbum → artista → busca; **faixa** `Wuthering Heights` (`/br/songs/1689467014?include=albums,artists`) com links Artista/Álbum e **Tocar**; o link do álbum abre em `Angels Cry` rolando/destacando a faixa 7; **playlist** `Angra: essenciais` (`pl.e095…`, 25 faixas com duração); card do Início abre **álbum** (`Stone Sour`); longa pressão em resultado toca (`Carry On`, `queue size=18/1/11`, metadata atualizada); `logcat -b crash` vazio. |
 | `emulator-5554` (TV x86, 1.9.4, detalhes/D-pad) | Instalado por cima. D-pad: ENTER na hero → playlist detail, foco no **‹** (contorno accent); DOWN → faixa 1 focada, ENTER = `playFromMediaId pl.095…`, `queue size=50` (60), metadata `Midnight Sun`; BACK fecha o detalhe e devolve o foco à aba Início; telas de baixo com foco bloqueado enquanto o overlay está aberto. Busca `Angra` na loja US (19 resultados) → **artista** (27 álbuns, grade de 5) → **Rebirth** (breadcrumb `Angra › Rebirth`, 10 faixas com duração); `logcat -b crash` vazio. |
+| `RXCX100BZ5J` (arm64, 1.9.5, biblioteca) | Instalado por cima. **Biblioteca** com contagem (12 recentes · 18 playlists · 93 artistas · 281 álbuns), filtro local (`backstreet` → 1 resultado, **zero** chamadas amp-api) e seções; **artista** AC/DC → `/br/search?types=artists` → `/br/artists/5040714` (26 álbuns + top-songs) → **Back In Black** (10 faixas); **álbum da biblioteca** `A Capella - Single` → `/br/search?types=albums` → `/br/albums/1445027335` (1 faixa, gravadora/copyright), **Tocar** = `playFromMediaId 1445027335` (fila 1) e toque na faixa = mesma coleção; **playlist** `Backstreet Boys: essenciais` → `pl.331a…` (22 faixas, curador/descrição), **Tocar** (fila 22) e faixa 2 (`skipToQueueItem 1`); **playlist do usuário** `Músicas favoritas` degrada (“Faixas indisponíveis”) e **Tocar** toca pelo id de biblioteca (fila 4); `Ver tudo` de Artistas (93) → AC/DC → mesmo detalhe; BACK nível a nível; `logcat -b crash` vazio. |
+| `emulator-5554` (TV x86, 1.9.5, biblioteca/D-pad) | Instalado por cima. Biblioteca em 1080p com as seções do engine (`Shuffle Library`, `Recently Added`, `Playlists`, `Artists`, `Albums`) e contagens; D-pad DOWN: filtro → Shuffle → Recentes → “Ver tudo” de Playlists → “Ver tudo” de Artistas (93 itens) → ENTER = `AC/DC` (`/us/search?types=artists` → `/us/artists/5040714`, 25 álbuns) → DOWN = grade → ENTER = álbum (`/us/albums/574050396`); “Ver tudo” de Álbuns (281) → card `A War You Cannot Win` → detalhe (`/us/albums/1440920100`, 2012, 12 faixas, Metal) → RIGHT/ENTER em **Tocar** = `playFromMediaId 1440920100` (fila 12); DOWN da última seção → mini player; BACK volta nível a nível; `logcat -b crash` vazio. |
 
 Evidências lado a lado com as referências dos companions
 (`.pipeline/revamp-tv/`, `.pipeline/revamp-car/` e as fotos de celular em
@@ -478,6 +527,22 @@ faixas com duração), `detail-11-home-card.png` (card do Início → álbum),
 `detail-12-tv-home-card.png` (playlist na TV), `detail-13-tv-dpad-focus.png` (faixa focada
 no D-pad), `detail-14-tv-artist.png` e `detail-15-tv-album.png` (artista/álbum na TV).
 
+Biblioteca (1.9.5): `library-audit-01-categories.png` … `library-audit-07-recent.png`
+(antes: categorias sem contagem/arte, artista caía no browse de 1 álbum, álbum/playlist
+abriam lista sem capa/metadados), `library-01-root-phone.png` e
+`library-02-artists-shelf-phone.png` (cabeçalho com contagem, filtro, Aleatória, seções),
+`library-03-artist-detail-phone.png` (artista com arte, gênero e álbuns),
+`library-04-artist-album-phone.png`, `library-05-album-detail-phone.png` (álbum da
+biblioteca com faixas), `library-06-filter-phone.png` (filtro local),
+`library-07-playlist-detail-phone.png`, `library-08-artists-ver-tudo-phone.png` e
+`library-09-ver-tudo-artist-detail-phone.png` (lista completa → detalhe),
+`library-10-playlist-degrade-phone.png` (playlist do usuário com **Tocar**),
+`library-11-root-after-phone.png`, `library-12-tv-home.png`,
+`library-13-tv-library.png` (TV), `library-14-tv-focus-search.png` …
+`library-18-tv-focus-shelf3.png` (D-pad seção a seção), `library-19-tv-artist-focus.png`
+e `library-20-tv-artist-detail.png`, `library-23-tv-library-album-detail.png` e
+`library-24-tv-album-playing.png` (álbum da biblioteca na TV).
+
 ## Limitações / P1
 
 - **Sem blur real**: o fundo do player é um gradiente escuro da cor dominante da capa
@@ -493,6 +558,15 @@ no D-pad), `detail-14-tv-artist.png` e `detail-15-tv-album.png` (artista/álbum 
   mas não uma coleção tocável, e o engine não monta fila para id de artista (testado com
   `playFromMediaId(192030844)` e `ra.192030844`: sessão continua `state=NONE`). O artista
   fica sem o pill **Tocar**; cada álbum e cada faixa principal continuam tocando.
+- **Biblioteca sem capa de artista**: o browse devolve `art=0` para os 93 artistas (só os
+  álbuns/playlists têm `content://`), então a seção usa a inicial em um disco; a arte real
+  aparece no `DetailScreen` (resolvida na amp-api).
+- **Biblioteca mostra 20 cards por seção**: as listas completas (93 artistas, 281 álbuns)
+  ficam atrás de **Ver tudo** e o filtro local procura em todos os itens já carregados; não
+  há busca de servidor nem carregamento incremental dentro da aba.
+- **“Aleatória” sem lista de faixas**: `/library/songs` é `playable` e devolve 0 filhos,
+  então a Biblioteca não tem a categoria “Músicas” — o atalho toca a biblioteca
+  embaralhada (fila medida: 101 itens).
 - **`one-x86`** não é publicado pelo CI (só arm32/arm64); o build local gera para o
   emulador.
 - **Login**: o diálogo AMS é hospedado pela `MainActivity` do engine; a UI o fecha

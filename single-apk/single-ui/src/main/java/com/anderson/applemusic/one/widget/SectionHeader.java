@@ -17,10 +17,23 @@ public final class SectionHeader extends LinearLayout {
     private final TextView count;
 
     public SectionHeader(Context context, String title) {
+        this(context, title, 0);
+    }
+
+    /** Section title with an optional category glyph before it (Biblioteca). */
+    public SectionHeader(Context context, String title, int icon) {
         super(context);
         setOrientation(HORIZONTAL);
         setGravity(Gravity.CENTER_VERTICAL);
 
+        if (icon != 0) {
+            IconView glyph = new IconView(context, icon, Tokens.TEXT_DIM);
+            LinearLayout.LayoutParams glyphParams =
+                    new LinearLayout.LayoutParams(Tokens.dp(21), Tokens.dp(21));
+            glyphParams.rightMargin = Tokens.dp(9);
+            glyphParams.topMargin = Tokens.dp(2);
+            addView(glyph, glyphParams);
+        }
         TextView label = Inter.text(context, title, Tokens.SECTION, Inter.BOLD, Tokens.TEXT);
         addView(label);
         count = Inter.text(context, "", 13f, Inter.REGULAR, Tokens.TEXT_DIM);

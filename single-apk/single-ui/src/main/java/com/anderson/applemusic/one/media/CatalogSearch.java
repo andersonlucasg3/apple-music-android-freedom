@@ -226,6 +226,13 @@ public final class CatalogSearch {
         void onFailure(String message);
     }
 
+    /** One catalogue match (id + title + artist + artwork) resolved by name. */
+    public interface MatchCallback {
+        void onMatch(Result match);
+
+        void onFailure(String message);
+    }
+
     public interface ArtistCallback {
         void onArtist(ArtistDetail artist);
 
@@ -635,12 +642,67 @@ public final class CatalogSearch {
                 }, collectionWaiter(callback));
     }
 
+    /**
+     * Resolves an artist by name (the browse tree only carries the library
+     * {@code 6-<persistentId>}): the best catalogue artist with that exact name.
+     */
+    public void findArtist(final String name, final MatchCallback callback) {
+        match("artists", clean(name), name, "", "Artista não encontrado no catálogo",
+                callback);
+    }
+
+    /** Resolves the catalogue album id for a library album title+artist. */
+    public void findAlbumMatch(final String title, final String artist,
+                               final MatchCallback callback) {
+        match("albums", clean(title + " " + artist), title, artist,
+                "Álbum não encontrado no catálogo", callback);
+    }
+
+    /** Resolves the catalogue playlist id for a library playlist title+curator. */
+    public void findPlaylistMatch(final String title, final String curator,
+                                  final MatchCallback callback) {
+        match("playlists", clean(title + " " + curator), title, curator,
+                "Playlist não encontrada no catálogo", callback);
+    }
+
     /** Resolves an album by title+artist and returns its catalogue track list. */
     public void findAlbum(final String title, final String artist,
                           final CollectionCallback callback) {
-        final String term = clean(title + " " + artist);
+        findAlbumMatch(title, artist, new MatchCallback() {
+            @Override
+            public void onMatch(Result match) {
+                albumTracks(match.id, callback);
+            }
+
+            @Override
+            public void onFailure(String message) {
+                callback.onFailure(message);
+            }
+        });
+    }
+
+    /** Track list of a catalogue playlist, resolved by title+curator. */
+    public void findPlaylist(final String title, final String curator,
+                             final CollectionCallback callback) {
+        findPlaylistMatch(title, curator, new MatchCallback() {
+            @Override
+            public void onMatch(Result match) {
+                playlistTracks(match.id, callback);
+            }
+
+            @Override
+            public void onFailure(String message) {
+                callback.onFailure(message);
+            }
+        });
+    }
+
+    /** One typed amp-api search whose best match is picked by {title, artist}. */
+    private void match(final String types, final String term, final String title,
+                       final String artist, final String miss,
+                       final MatchCallback callback) {
         load("/" + storefront() + "/search?term=" + encode(term)
-                        + "&types=albums&limit=8&l=" + language(),
+                        + "&types=" + types + "&limit=8&l=" + language(),
                 new JsonParser<List<Result>>() {
                     @Override
                     public List<Result> parse(String body) {
@@ -651,46 +713,10 @@ public final class CatalogSearch {
                     public void deliver(List<Result> results) {
                         Result match = pick(results, title, artist);
                         if (match == null) {
-                            callback.onFailure("Álbum não encontrado no catálogo");
+                            callback.onFailure(miss);
                             return;
                         }
-                        albumTracks(match.id, callback);
-                    }
-
-                    @Override
-                    public void fail(String message) {
-                        callback.onFailure(message);
-                    }
-                });
-    }
-
-    /** Track list of a catalogue playlist, resolved by title+curator. */
-    public void findPlaylist(final String title, final String curator,
-                             final CollectionCallback callback) {
-        final String term = clean(title + " " + curator);
-        load("/" + storefront() + "/search?term=" + encode(term)
-                        + "&types=playlists&limit=8&l=" + language(),
-                new JsonParser<List<Result>>() {
-                    @Override
-                    public List<Result> parse(String body) {
-                        return CatalogSearch.this.parse(body);
-                    }
-                }, new Waiter<List<Result>>() {
-                    @Override
-                    public void deliver(List<Result> results) {
-                        Result match = pick(results, title, curator);
-                        if (match == null) {
-                            callback.onFailure("Playlist não encontrada no catálogo");
-                            return;
-                        }
-                        load("/" + storefront() + "/playlists/" + encode(match.id)
-                                        + "?include=tracks&limit[tracks]=100&l=" + language(),
-                                new JsonParser<Collection>() {
-                                    @Override
-                                    public Collection parse(String body) throws Exception {
-                                        return collection(body, "tracks", match.id);
-                                    }
-                                }, collectionWaiter(callback));
+                        callback.onMatch(match);
                     }
 
                     @Override
