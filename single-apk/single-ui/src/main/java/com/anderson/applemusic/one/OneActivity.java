@@ -1,37 +1,46 @@
 package com.anderson.applemusic.one;
 
 import android.app.Activity;
-import android.app.AlertDialog;
 import android.app.Application;
-import android.content.DialogInterface;
 import android.content.Intent;
 import android.content.pm.PackageInfo;
 import android.content.pm.PackageInstaller;
 import android.content.pm.PackageManager;
-import android.graphics.Color;
-import android.graphics.Typeface;
-import android.graphics.drawable.GradientDrawable;
+import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
 import android.os.SystemClock;
-import android.text.InputType;
 import android.text.TextUtils;
 import android.util.Log;
 import android.view.Gravity;
-import android.view.KeyEvent;
 import android.view.View;
 import android.view.ViewGroup;
-import android.view.inputmethod.EditorInfo;
-import android.widget.EditText;
 import android.widget.FrameLayout;
-import android.widget.HorizontalScrollView;
-import android.widget.ImageView;
 import android.widget.LinearLayout;
-import android.widget.ProgressBar;
-import android.widget.ScrollView;
-import android.widget.SeekBar;
 import android.widget.TextView;
+import android.window.OnBackInvokedCallback;
+import android.window.OnBackInvokedDispatcher;
+
+import com.anderson.applemusic.one.media.ArtworkLoader;
+import com.anderson.applemusic.one.media.CatalogSearch;
+import com.anderson.applemusic.one.media.MediaClient;
+import com.anderson.applemusic.one.screen.AccountScreen;
+import com.anderson.applemusic.one.screen.ChildSink;
+import com.anderson.applemusic.one.screen.CollectionScreen;
+import com.anderson.applemusic.one.screen.HomeScreen;
+import com.anderson.applemusic.one.screen.LibraryScreen;
+import com.anderson.applemusic.one.screen.NowPlayingScreen;
+import com.anderson.applemusic.one.screen.RadioScreen;
+import com.anderson.applemusic.one.screen.ScreenHost;
+import com.anderson.applemusic.one.screen.SearchScreen;
+import com.anderson.applemusic.one.screen.UpdatesScreen;
+import com.anderson.applemusic.one.theme.Inter;
+import com.anderson.applemusic.one.theme.Tokens;
+import com.anderson.applemusic.one.widget.ActionSheet;
+import com.anderson.applemusic.one.widget.Icons;
+import com.anderson.applemusic.one.widget.MiniPlayer;
+import com.anderson.applemusic.one.widget.TopBar;
 
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -42,15 +51,15 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
 /**
- * The single-APK UI: plain framework views (no resources, no AndroidX, no Compose) so it
- * can live as an extra dex inside the patched Apple Music engine APK.
+ * The single-APK shell: framework-only views (no resources, no AndroidX, no Compose) so the
+ * UI can live as an extra dex inside the patched Apple Music engine APK.
  *
- * <p>Browse ({@code __AUTO_ROOT__}), playback, session actions and catalogue search are
- * wired to {@link MediaClient} / {@link CatalogSearch}; artwork goes through
- * {@link ArtworkLoader}. Every pixel is created in code, all strings are literal.
+ * <p>This class owns the engine wiring (MediaBrowser, updater, Apple ID sheet, install
+ * status) and the overlay navigation; the pixels live in {@code theme/}, {@code widget/}
+ * and {@code screen/}.
  */
 public final class OneActivity extends Activity
-        implements MediaClient.Listener, UpdateManager.Listener {
+        implements MediaClient.Listener, UpdateManager.Listener, ScreenHost {
 
     private static final String TAG = "AppleMusicOne";
     static final String ACTION_INSTALL_STATUS = "com.anderson.applemusic.one.INSTALL_STATUS";
@@ -66,18 +75,15 @@ public final class OneActivity extends Activity
     private static final long RECONNECT_DELAY_MS = 700L;
     private static final int MAX_RECONNECT_ATTEMPTS = 4;
 
-    private static final int COLOR_BG = 0xFF000000;
-    private static final int COLOR_SURFACE = 0xFF1C1C1E;
-    private static final int COLOR_SURFACE_FOCUS = 0xFF313134;
-    private static final int COLOR_TEXT = 0xFFFFFFFF;
-    private static final int COLOR_TEXT_DIM = 0xFFA1A1A6;
-    private static final int COLOR_ACCENT = 0xFFFA243C;
-
     private static final long TICK_MS = 500L;
     private static final long ACTION_TIMEOUT_MS = 2500L;
     private static final String ACTION_CREATE_STATION = "CREATE_STATION";
     private static final String ACTION_FAVORITE = "FAVORITE";
     private static final String ACTION_ADD_TO_LIBRARY = "ADD_TO_LIBRARY";
+
+    private static final int KIND_HOME = 0;
+    private static final int KIND_RADIO = 1;
+    private static final int KIND_LIBRARY = 2;
 
     private final Handler main = new Handler(Looper.getMainLooper());
     private final ExecutorService loader = Executors.newSingleThreadExecutor();
@@ -104,60 +110,32 @@ public final class OneActivity extends Activity
         }
     };
 
-    private AlertDialog updateDialog;
-    private TextView updateMessage;
-    private ProgressBar updateProgress;
-    private TextView updateCheckButton;
-    private TextView updateDownloadButton;
-    private TextView updateCancelButton;
-    private UpdateManager.Update pendingUpdate;
-
-    private LinearLayout tabBar;
-    private LinearLayout content;
+    private FrameLayout rootFrame;
+    private LinearLayout base;
+    private TopBar topBar;
+    private FrameLayout screenHost;
     private TextView status;
+    private MiniPlayer miniPlayer;
 
-    private LinearLayout miniPlayer;
-    private ImageView miniCover;
-    private TextView miniTitle;
-    private TextView miniArtist;
-    private TextView miniPlay;
-    private TextView nowPlayingButton;
+    private HomeScreen homeScreen;
+    private CollectionScreen tabCollection;
+    private FrameLayout collectionHost;
+    private CollectionScreen overlayCollection;
 
-    private FrameLayout playerOverlay;
-    private ImageView playerCover;
-    private TextView playerTitle;
-    private TextView playerArtist;
-    private TextView playerTime;
-    private SeekBar seekBar;
-    private TextView playerPlay;
-    private TextView playerStation;
-
-    private FrameLayout searchOverlay;
-    private EditText searchInput;
-    private TextView searchStatus;
-    private LinearLayout searchResults;
+    private NowPlayingScreen playerScreen;
+    private SearchScreen searchScreen;
+    private ActionSheet actionSheet;
+    private UpdatesScreen updatesScreen;
+    private AccountScreen accountScreen;
 
     private final List<MediaClient.Item> tabs = new ArrayList<MediaClient.Item>();
-    private final Map<String, LinearLayout> sections = new HashMap<String, LinearLayout>();
-    private final List<Level> levels = new ArrayList<Level>();
-    private LinearLayout levelContainer;
+    private final Map<String, ChildSink> pending = new HashMap<String, ChildSink>();
     private int selectedTab = -1;
 
     private MediaClient.Snapshot latest = new MediaClient.Snapshot();
-    private boolean seekTracking;
     private boolean rootReceived;
     private boolean hasTouch;
-    private int lastArtworkHash;
-
-    private static final class Level {
-        final String id;
-        final String title;
-
-        Level(String id, String title) {
-            this.id = id;
-            this.title = title;
-        }
-    }
+    private boolean miniVisible;
 
     @Override
     protected void onCreate(Bundle state) {
@@ -165,7 +143,9 @@ public final class OneActivity extends Activity
         // Same style the injected android:theme points at; belt and braces if the binary
         // manifest keeps the engine's own theme.
         setTheme(android.R.style.Theme_Material_NoActionBar);
-        hasTouch = getPackageManager().hasSystemFeature(PackageManager.FEATURE_TOUCHSCREEN);
+        Tokens.init(this);
+        Inter.load(this);
+        hasTouch = Tokens.touch();
         client = new MediaClient(this);
         artwork = new ArtworkLoader(this);
         catalog = new CatalogSearch(this);
@@ -188,6 +168,7 @@ public final class OneActivity extends Activity
         super.onResume();
         if (refreshOnResume) {
             refreshOnResume = false;
+            accountScreen.close();
             refreshFromEngine();
         }
     }
@@ -198,7 +179,7 @@ public final class OneActivity extends Activity
         refreshingCatalog = true;
         reconnecting = true;
         refreshAttempts = 0;
-        setMessage("Atualizando o Apple Music…");
+        setStatus("Atualizando o Apple Music…");
         client.disconnect();
         main.removeCallbacks(reconnect);
         main.postDelayed(reconnect, RECONNECT_DELAY_MS);
@@ -207,63 +188,20 @@ public final class OneActivity extends Activity
     /** Drops the previous account's tabs, shelves, drill-down and covers. */
     private void resetBrowse() {
         rootReceived = false;
-        lastArtworkHash = 0;
+        disposeTabScreen();
+        pending.clear();
         tabs.clear();
-        tabBar.removeAllViews();
-        sections.clear();
-        levels.clear();
-        levelContainer = null;
+        topBar.setTabs(new String[0], -1);
         selectedTab = -1;
-        content.removeAllViews();
+        closeCollectionOverlay();
+        setStatus("");
     }
 
     // --- UI scaffolding -----------------------------------------------------------
 
-    private int dp(float value) {
-        return Math.round(value * getResources().getDisplayMetrics().density);
-    }
-
-    private GradientDrawable background(int fill, boolean focused) {
-        GradientDrawable drawable = new GradientDrawable();
-        drawable.setColor(fill);
-        drawable.setCornerRadius(dp(10));
-        if (focused) drawable.setStroke(dp(2), COLOR_ACCENT);
-        return drawable;
-    }
-
-    private void applyFocusBackground(final View view, final int normalFill) {
-        view.setOnFocusChangeListener(new View.OnFocusChangeListener() {
-            @Override
-            public void onFocusChange(View v, boolean hasFocus) {
-                v.setBackground(background(hasFocus ? COLOR_SURFACE_FOCUS : normalFill, hasFocus));
-            }
-        });
-    }
-
-    private TextView text(String value, float sizeSp, int color, boolean bold) {
-        TextView view = new TextView(this);
-        view.setText(value);
-        view.setTextSize(sizeSp);
-        view.setTextColor(color);
-        if (bold) view.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
-        return view;
-    }
-
-    private TextView button(String label, View.OnClickListener listener) {
-        TextView view = text(label, 13f, COLOR_TEXT, true);
-        view.setGravity(Gravity.CENTER);
-        view.setPadding(dp(12), dp(8), dp(12), dp(8));
-        view.setBackground(background(COLOR_SURFACE, false));
-        view.setFocusable(true);
-        view.setClickable(true);
-        view.setOnClickListener(listener);
-        applyFocusBackground(view, COLOR_SURFACE);
-        return view;
-    }
-
     private void buildUi() {
-        final FrameLayout rootFrame = new FrameLayout(this);
-        rootFrame.setBackgroundColor(COLOR_BG);
+        rootFrame = new FrameLayout(this);
+        rootFrame.setBackgroundColor(Tokens.BG);
         // Android 15+ draws edge-to-edge for targetSdk 35+; keep the UI out of the
         // status/navigation bars on touch devices and TV alike.
         rootFrame.setOnApplyWindowInsetsListener(new View.OnApplyWindowInsetsListener() {
@@ -276,398 +214,129 @@ public final class OneActivity extends Activity
             }
         });
 
-        LinearLayout root = new LinearLayout(this);
-        root.setOrientation(LinearLayout.VERTICAL);
-        root.setBackgroundColor(COLOR_BG);
-        rootFrame.addView(root, new FrameLayout.LayoutParams(
+        base = new LinearLayout(this);
+        base.setOrientation(LinearLayout.VERTICAL);
+        base.setBackgroundColor(Tokens.BG);
+        rootFrame.addView(base, new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
 
-        // Top bar: title + actions.
-        LinearLayout topBar = new LinearLayout(this);
-        topBar.setOrientation(LinearLayout.HORIZONTAL);
-        topBar.setGravity(Gravity.CENTER_VERTICAL);
-        topBar.setPadding(dp(16), dp(10), dp(16), dp(6));
-
-        TextView logo = text("Apple Music", 18f, COLOR_TEXT, true);
-        logo.setLetterSpacing(0.02f);
-        topBar.addView(logo, new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
-
-        View spacer = new View(this);
-        topBar.addView(spacer, new LinearLayout.LayoutParams(0, 1, 1f));
-
-        topBar.addView(button("Buscar", new View.OnClickListener() {
+        topBar = new TopBar(this, new TopBar.Listener() {
             @Override
-            public void onClick(View v) {
+            public void onTabSelected(int index) {
+                selectTab(index);
+            }
+
+            @Override
+            public void onSearch() {
                 openSearch();
             }
-        }), topBarButtonParams());
-        topBar.addView(button("Conta", new View.OnClickListener() {
+
             @Override
-            public void onClick(View v) {
-                openAccount();
+            public void onAccount() {
+                accountScreen.open();
             }
-        }), topBarButtonParams());
-        // D-pad path to the full player (the mini bar is only reachable with touch).
-        nowPlayingButton = button("Tocando", new View.OnClickListener() {
+
             @Override
-            public void onClick(View v) {
-                openPlayer();
+            public void onUpdates() {
+                openUpdates();
+            }
+
+            @Override
+            public void onDownFromChrome() {
+                View target = firstFocusable(screenHost);
+                if (target != null) target.requestFocus();
             }
         });
-        nowPlayingButton.setVisibility(View.GONE);
-        topBar.addView(nowPlayingButton, topBarButtonParams());
-        root.addView(topBar, new LinearLayout.LayoutParams(
+        base.addView(topBar, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
 
-        // Engine tabs (Início / Rádio / Biblioteca) + the update shortcut on the right.
-        LinearLayout tabsRow = new LinearLayout(this);
-        tabsRow.setOrientation(LinearLayout.HORIZONTAL);
-        tabsRow.setGravity(Gravity.CENTER_VERTICAL);
-        tabsRow.setPadding(dp(12), dp(2), dp(12), dp(2));
-
-        HorizontalScrollView tabScroll = new HorizontalScrollView(this);
-        tabScroll.setHorizontalScrollBarEnabled(false);
-        tabBar = new LinearLayout(this);
-        tabBar.setOrientation(LinearLayout.HORIZONTAL);
-        tabScroll.addView(tabBar, new HorizontalScrollView.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
-        LinearLayout.LayoutParams tabScrollParams = new LinearLayout.LayoutParams(0,
-                ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
-        tabsRow.addView(tabScroll, tabScrollParams);
-        LinearLayout.LayoutParams updateParams = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        updateParams.leftMargin = dp(8);
-        tabsRow.addView(button("Atualizações", new View.OnClickListener() {
-            @Override
-            public void onClick(View v) {
-                showUpdates();
-            }
-        }), updateParams);
-        root.addView(tabsRow, new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
-
-        // Browse content.
-        ScrollView scroll = new ScrollView(this);
-        scroll.setFillViewport(true);
-        content = new LinearLayout(this);
-        content.setOrientation(LinearLayout.VERTICAL);
-        content.setPadding(dp(16), dp(7), dp(16), dp(7));
-        scroll.addView(content, new ScrollView.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
-        root.addView(scroll, new LinearLayout.LayoutParams(
+        screenHost = new FrameLayout(this);
+        base.addView(screenHost, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
 
-        status = text("", 12f, COLOR_TEXT_DIM, false);
-        status.setPadding(dp(16), dp(4), dp(16), dp(4));
+        status = Inter.text(this, "", Tokens.CAPTION, Inter.REGULAR, Tokens.TEXT_DIM);
+        status.setPadding(Tokens.dp(16), Tokens.dp(3), Tokens.dp(16), Tokens.dp(4));
         status.setMaxLines(2);
         status.setEllipsize(TextUtils.TruncateAt.END);
-        root.addView(status, new LinearLayout.LayoutParams(
+        status.setVisibility(View.GONE);
+        base.addView(status, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
 
-        buildMiniPlayer(root);
-        rootFrame.addView(buildPlayerOverlay(), new FrameLayout.LayoutParams(
+        // Overlays, bottom-up: collection browser, search, mini player, full player,
+        // actions sheet, updates, account.
+        collectionHost = new FrameLayout(this);
+        collectionHost.setBackgroundColor(Tokens.BG);
+        collectionHost.setVisibility(View.GONE);
+        rootFrame.addView(collectionHost, new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
-        rootFrame.addView(buildSearchOverlay(), new FrameLayout.LayoutParams(
+
+        searchScreen = new SearchScreen(this, this, artwork, catalog);
+        rootFrame.addView(searchScreen.view(), new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+
+        miniPlayer = new MiniPlayer(this, new MiniPlayer.Listener() {
+            @Override
+            public void onOpen() {
+                openPlayer();
+            }
+
+            @Override
+            public void onToggle() {
+                client.togglePlayPause();
+            }
+        });
+        miniPlayer.setId(View.generateViewId());
+        miniPlayer.setVisibility(View.GONE);
+        FrameLayout.LayoutParams miniParams = new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT,
+                Gravity.BOTTOM);
+        miniParams.leftMargin = Tokens.dp(12);
+        miniParams.rightMargin = Tokens.dp(12);
+        miniParams.bottomMargin = Tokens.dp(10);
+        rootFrame.addView(miniPlayer, miniParams);
+
+        playerScreen = new NowPlayingScreen(this, this);
+        rootFrame.addView(playerScreen.view(), new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+
+        actionSheet = new ActionSheet(this);
+        rootFrame.addView(actionSheet, new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+
+        updatesScreen = new UpdatesScreen(this, this, updater,
+                Version.NAME + " (" + Version.CODE + ")", engineVersion());
+        rootFrame.addView(updatesScreen.view(), new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+
+        accountScreen = new AccountScreen(this, this);
+        rootFrame.addView(accountScreen.view(), new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
 
         setContentView(rootFrame);
+        registerBackHandler();
         main.postDelayed(ticker, TICK_MS);
     }
 
-    private LinearLayout.LayoutParams topBarButtonParams() {
-        LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        params.leftMargin = dp(6);
-        return params;
+    private static View firstFocusable(View root) {
+        if (root == null) return null;
+        if (root.isFocusable() && root.getVisibility() == View.VISIBLE) return root;
+        if (root instanceof ViewGroup) {
+            ViewGroup group = (ViewGroup) root;
+            for (int i = 0; i < group.getChildCount(); i++) {
+                View found = firstFocusable(group.getChildAt(i));
+                if (found != null) return found;
+            }
+        }
+        return null;
     }
 
-    private void buildMiniPlayer(LinearLayout root) {
-        miniPlayer = new LinearLayout(this);
-        miniPlayer.setOrientation(LinearLayout.HORIZONTAL);
-        miniPlayer.setGravity(Gravity.CENTER_VERTICAL);
-        miniPlayer.setPadding(dp(12), dp(8), dp(12), dp(8));
-        miniPlayer.setBackgroundColor(COLOR_SURFACE);
-        miniPlayer.setFocusable(true);
-        miniPlayer.setClickable(true);
-        miniPlayer.setId(View.generateViewId());
-        miniPlayer.setOnClickListener(new View.OnClickListener() {
-            @Override
-            public void onClick(View v) {
-                openPlayer();
-            }
-        });
-        applyFocusBackground(miniPlayer, COLOR_SURFACE);
-
-        miniCover = new ImageView(this);
-        miniCover.setScaleType(ImageView.ScaleType.CENTER_CROP);
-        miniCover.setBackgroundColor(0xFF2C2C2E);
-        LinearLayout.LayoutParams coverParams = new LinearLayout.LayoutParams(dp(52), dp(52));
-        coverParams.rightMargin = dp(12);
-        miniPlayer.addView(miniCover, coverParams);
-
-        LinearLayout textBlock = new LinearLayout(this);
-        textBlock.setOrientation(LinearLayout.VERTICAL);
-        miniTitle = text("", 14f, COLOR_TEXT, true);
-        miniTitle.setMaxLines(1);
-        miniTitle.setEllipsize(TextUtils.TruncateAt.END);
-        miniArtist = text("", 12f, COLOR_TEXT_DIM, false);
-        miniArtist.setMaxLines(1);
-        miniArtist.setEllipsize(TextUtils.TruncateAt.END);
-        textBlock.addView(miniTitle);
-        textBlock.addView(miniArtist);
-        miniPlayer.addView(textBlock, new LinearLayout.LayoutParams(0,
-                ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
-
-        miniPlay = button("▶", new View.OnClickListener() {
-            @Override
-            public void onClick(View v) {
-                client.togglePlayPause();
-            }
-        });
-        miniPlay.setMinWidth(dp(48));
-        miniPlay.setGravity(Gravity.CENTER);
-        miniPlayer.addView(miniPlay, new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
-
-        LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        params.leftMargin = dp(12);
-        params.rightMargin = dp(12);
-        params.bottomMargin = dp(10);
-        miniPlayer.setVisibility(View.GONE);
-        root.addView(miniPlayer, params);
-    }
-
-    private FrameLayout buildPlayerOverlay() {
-        playerOverlay = new FrameLayout(this);
-        playerOverlay.setBackgroundColor(0xFF0B0B0B);
-        playerOverlay.setVisibility(View.GONE);
-        playerOverlay.setClickable(true);
-
-        LinearLayout sheet = new LinearLayout(this);
-        sheet.setOrientation(LinearLayout.VERTICAL);
-        sheet.setPadding(dp(24), dp(16), dp(24), dp(20));
-        playerOverlay.addView(sheet, new FrameLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
-
-        LinearLayout header = new LinearLayout(this);
-        header.setOrientation(LinearLayout.HORIZONTAL);
-        header.setGravity(Gravity.CENTER_VERTICAL);
-        header.addView(text("Tocando agora", 18f, COLOR_TEXT, true),
-                new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
-        header.addView(button("Fechar", new View.OnClickListener() {
-            @Override
-            public void onClick(View v) {
-                closePlayer();
-            }
-        }));
-        sheet.addView(header, new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
-
-        playerCover = new ImageView(this);
-        playerCover.setScaleType(ImageView.ScaleType.CENTER_INSIDE);
-        playerCover.setBackgroundColor(0xFF1A1A1A);
-        LinearLayout.LayoutParams coverParams = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f);
-        coverParams.topMargin = dp(12);
-        coverParams.bottomMargin = dp(12);
-        sheet.addView(playerCover, coverParams);
-
-        playerTitle = text("", 20f, COLOR_TEXT, true);
-        playerTitle.setMaxLines(2);
-        playerTitle.setEllipsize(TextUtils.TruncateAt.END);
-        sheet.addView(playerTitle);
-
-        playerArtist = text("", 14f, COLOR_TEXT_DIM, false);
-        playerArtist.setMaxLines(1);
-        playerArtist.setEllipsize(TextUtils.TruncateAt.END);
-        sheet.addView(playerArtist);
-
-        seekBar = new SeekBar(this);
-        seekBar.setMax(1000);
-        seekBar.setPadding(0, dp(8), 0, 0);
-        seekBar.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
-            @Override
-            public void onProgressChanged(SeekBar bar, int progress, boolean fromUser) {
-                if (fromUser && latest.durationMs > 0L) {
-                    playerTime.setText(format(durationFor(progress)) + " / "
-                            + format(latest.durationMs));
-                }
-            }
-
-            @Override
-            public void onStartTrackingTouch(SeekBar bar) {
-                seekTracking = true;
-            }
-
-            @Override
-            public void onStopTrackingTouch(SeekBar bar) {
-                seekTracking = false;
-                if (latest.durationMs > 0L) {
-                    client.seekTo(durationFor(bar.getProgress()));
-                }
-            }
-        });
-        sheet.addView(seekBar, new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
-
-        playerTime = text("0:00 / 0:00", 12f, COLOR_TEXT_DIM, false);
-        sheet.addView(playerTime);
-
-        LinearLayout controls = new LinearLayout(this);
-        controls.setOrientation(LinearLayout.HORIZONTAL);
-        controls.setGravity(Gravity.CENTER);
-        controls.setPadding(0, dp(10), 0, 0);
-        controls.addView(button("◀◀", new View.OnClickListener() {
-            @Override
-            public void onClick(View v) {
-                client.skipPrevious();
-            }
-        }), controlParams());
-        playerPlay = button("▶", new View.OnClickListener() {
-            @Override
-            public void onClick(View v) {
-                client.togglePlayPause();
-            }
-        });
-        controls.addView(playerPlay, controlParams());
-        controls.addView(button("▶▶", new View.OnClickListener() {
-            @Override
-            public void onClick(View v) {
-                client.skipNext();
-            }
-        }), controlParams());
-        sheet.addView(controls, new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
-
-        LinearLayout actionRow = new LinearLayout(this);
-        actionRow.setOrientation(LinearLayout.HORIZONTAL);
-        actionRow.setGravity(Gravity.CENTER);
-        actionRow.setPadding(0, dp(8), 0, 0);
-        actionRow.addView(button("Ações", new View.OnClickListener() {
-            @Override
-            public void onClick(View v) {
-                showActions();
-            }
-        }), controlParams());
-        playerStation = button("Criar Estação", new View.OnClickListener() {
-            @Override
-            public void onClick(View v) {
-                createStation();
-            }
-        });
-        playerStation.setVisibility(View.GONE);
-        actionRow.addView(playerStation, controlParams());
-        sheet.addView(actionRow, new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
-
-        return playerOverlay;
-    }
-
-    private LinearLayout.LayoutParams controlParams() {
-        LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        params.leftMargin = dp(6);
-        params.rightMargin = dp(6);
-        return params;
-    }
-
-    private FrameLayout buildSearchOverlay() {
-        searchOverlay = new FrameLayout(this);
-        searchOverlay.setBackgroundColor(COLOR_BG);
-        searchOverlay.setVisibility(View.GONE);
-        searchOverlay.setClickable(true);
-
-        LinearLayout sheet = new LinearLayout(this);
-        sheet.setOrientation(LinearLayout.VERTICAL);
-        sheet.setPadding(dp(24), dp(16), dp(24), dp(16));
-        searchOverlay.addView(sheet, new FrameLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
-
-        LinearLayout header = new LinearLayout(this);
-        header.setOrientation(LinearLayout.HORIZONTAL);
-        header.setGravity(Gravity.CENTER_VERTICAL);
-        header.addView(text("Buscar", 18f, COLOR_TEXT, true),
-                new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
-        header.addView(button("Fechar", new View.OnClickListener() {
-            @Override
-            public void onClick(View v) {
-                closeSearch();
-            }
-        }));
-        sheet.addView(header);
-
-        LinearLayout inputRow = new LinearLayout(this);
-        inputRow.setOrientation(LinearLayout.HORIZONTAL);
-        inputRow.setGravity(Gravity.CENTER_VERTICAL);
-        inputRow.setPadding(0, dp(10), 0, dp(8));
-        searchInput = new EditText(this);
-        searchInput.setHint("Músicas, álbuns, artistas");
-        searchInput.setHintTextColor(COLOR_TEXT_DIM);
-        searchInput.setTextColor(COLOR_TEXT);
-        searchInput.setTextSize(16f);
-        searchInput.setSingleLine(true);
-        searchInput.setInputType(InputType.TYPE_CLASS_TEXT);
-        searchInput.setImeOptions(EditorInfo.IME_ACTION_SEARCH);
-        searchInput.setBackground(background(COLOR_SURFACE, false));
-        searchInput.setPadding(dp(12), dp(8), dp(12), dp(8));
-        searchInput.setOnEditorActionListener(new TextView.OnEditorActionListener() {
-            @Override
-            public boolean onEditorAction(TextView v, int actionId, android.view.KeyEvent event) {
-                if (actionId == EditorInfo.IME_ACTION_SEARCH) {
-                    submitSearch();
-                    return true;
-                }
-                return false;
-            }
-        });
-        inputRow.addView(searchInput, new LinearLayout.LayoutParams(0,
-                ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
-        LinearLayout.LayoutParams searchButtonParams = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        searchButtonParams.leftMargin = dp(8);
-        inputRow.addView(button("Buscar", new View.OnClickListener() {
-            @Override
-            public void onClick(View v) {
-                submitSearch();
-            }
-        }), searchButtonParams);
-        sheet.addView(inputRow);
-
-        searchStatus = text("", 12f, COLOR_TEXT_DIM, false);
-        searchStatus.setPadding(0, dp(4), 0, dp(6));
-        sheet.addView(searchStatus);
-
-        ScrollView resultsScroll = new ScrollView(this);
-        searchResults = new LinearLayout(this);
-        searchResults.setOrientation(LinearLayout.VERTICAL);
-        resultsScroll.addView(searchResults, new ScrollView.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
-        sheet.addView(resultsScroll, new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
-
-        TextView fallback = button("Abrir a busca do Apple Music", new View.OnClickListener() {
-            @Override
-            public void onClick(View v) {
-                CatalogSearch.openEngineSearch(OneActivity.this);
-            }
-        });
-        LinearLayout.LayoutParams fallbackParams = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        fallbackParams.topMargin = dp(8);
-        sheet.addView(fallback, fallbackParams);
-
-        return searchOverlay;
-    }
-
-    // --- browse -------------------------------------------------------------------
+    // --- tabs and screens ---------------------------------------------------------
 
     @Override
     public void onConnected() {
         Log.i(TAG, "connected");
         reconnecting = false;
-        setMessage("Conectado ao Apple Music");
+        setStatus("Conectado ao Apple Music");
         loadAsync(MediaClient.AUTO_ROOT);
     }
 
@@ -677,21 +346,26 @@ public final class OneActivity extends Activity
         if ((reconnecting || refreshingCatalog) && refreshAttempts < MAX_RECONNECT_ATTEMPTS) {
             refreshAttempts++;
             reconnecting = true;
-            setMessage("Reconectando ao Apple Music…");
+            setStatus("Reconectando ao Apple Music…");
             main.removeCallbacks(reconnect);
             main.postDelayed(reconnect, RECONNECT_DELAY_MS);
             return;
         }
         reconnecting = false;
         refreshingCatalog = false;
-        setMessage(message);
+        setStatus(message);
     }
 
     @Override
     public void onChildrenFailed(String parentId) {
         Log.w(TAG, "children failed: " + parentId);
         if (MediaClient.AUTO_ROOT.equals(parentId) && retryCatalog()) return;
-        setMessage("Não foi possível carregar " + parentId);
+        ChildSink sink = pending.get(parentId);
+        if (sink != null) {
+            sink.onFailed(parentId);
+        } else {
+            setStatus("Não foi possível carregar " + parentId);
+        }
     }
 
     @Override
@@ -700,18 +374,9 @@ public final class OneActivity extends Activity
             onRoot(children);
             return;
         }
-        if (!levels.isEmpty() && levels.get(levels.size() - 1).id.equals(parentId)) {
-            fillLevel(children);
-            return;
-        }
-        if (selectedTab >= 0 && selectedTab < tabs.size()
-                && tabs.get(selectedTab).id.equals(parentId)) {
-            buildTabRoot(children);
-            return;
-        }
-        LinearLayout cards = sections.get(parentId);
-        if (cards != null) {
-            populateShelf(cards, children);
+        ChildSink sink = pending.get(parentId);
+        if (sink != null) {
+            sink.onChildren(parentId, children);
             return;
         }
         Log.w(TAG, "unhandled children for " + parentId);
@@ -725,7 +390,7 @@ public final class OneActivity extends Activity
         }
         if (found.isEmpty()) {
             if (retryCatalog()) return;
-            setMessage("Apple Music não expôs o catálogo de mídia");
+            setStatus("Apple Music não expôs o catálogo de mídia");
             return;
         }
         rootReceived = true;
@@ -733,7 +398,9 @@ public final class OneActivity extends Activity
         refreshAttempts = 0;
         tabs.clear();
         tabs.addAll(found);
-        buildTabs();
+        String[] labels = new String[tabs.size()];
+        for (int i = 0; i < tabs.size(); i++) labels[i] = label(tabs.get(i));
+        topBar.setTabs(labels, 0);
         selectTab(0);
         // TV has no touch: start the D-pad on the selected tab, not on the top bar.
         if (!hasTouch) {
@@ -754,354 +421,96 @@ public final class OneActivity extends Activity
         if (!refreshingCatalog || refreshAttempts >= MAX_RECONNECT_ATTEMPTS) return false;
         refreshAttempts++;
         reconnecting = true;
-        setMessage("Aguardando o catálogo do Apple Music…");
+        setStatus("Aguardando o catálogo do Apple Music…");
         main.removeCallbacks(reconnect);
         main.postDelayed(reconnect, RECONNECT_DELAY_MS);
         return true;
     }
 
     private void focusSelectedTab() {
-        if (selectedTab >= 0 && selectedTab < tabBar.getChildCount()) {
-            tabBar.getChildAt(selectedTab).requestFocus();
-        }
+        View tab = topBar.tabAt(selectedTab);
+        if (tab != null) tab.requestFocus();
     }
 
-    private static View firstFocusable(View root) {
-        if (root instanceof ViewGroup) {
-            ViewGroup group = (ViewGroup) root;
-            for (int i = 0; i < group.getChildCount(); i++) {
-                View found = firstFocusable(group.getChildAt(i));
-                if (found != null) return found;
-            }
-            return null;
+    private static int kindOf(MediaClient.Item tab) {
+        String id = tab.id.toLowerCase(Locale.ROOT);
+        String title = tab.title.toLowerCase(Locale.ROOT);
+        if (id.contains("radio") || title.contains("radio") || title.contains("rádio")) {
+            return KIND_RADIO;
         }
-        if (root != null && root.isFocusable() && root.getVisibility() == View.VISIBLE) {
-            return root;
+        if (id.contains("library") || title.contains("library") || title.contains("biblioteca")) {
+            return KIND_LIBRARY;
         }
-        return null;
+        return KIND_HOME;
     }
 
-    private void buildTabs() {
-        tabBar.removeAllViews();
-        for (int i = 0; i < tabs.size(); i++) {
-            final int index = i;
-            TextView tab = button(tabs.get(i).title, new View.OnClickListener() {
-                @Override
-                public void onClick(View v) {
-                    selectTab(index);
-                }
-            });
-            tab.setTag(Integer.valueOf(index));
-            // D-pad: DOWN from the tab row enters the browse content directly.
-            tab.setOnKeyListener(new View.OnKeyListener() {
-                @Override
-                public boolean onKey(View v, int keyCode, KeyEvent event) {
-                    if (event.getAction() == KeyEvent.ACTION_DOWN
-                            && keyCode == KeyEvent.KEYCODE_DPAD_DOWN) {
-                        View target = firstFocusable(content);
-                        if (target != null) {
-                            target.requestFocus();
-                            return true;
-                        }
-                    }
-                    return false;
-                }
-            });
-            LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(
-                    ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-            params.rightMargin = dp(8);
-            tabBar.addView(tab, params);
+    private static String label(MediaClient.Item tab) {
+        switch (kindOf(tab)) {
+            case KIND_RADIO:
+                return "Rádio";
+            case KIND_LIBRARY:
+                return "Biblioteca";
+            default:
+                return "Início";
         }
     }
 
     private void selectTab(int index) {
         if (index < 0 || index >= tabs.size()) return;
-        if (index == selectedTab && levels.isEmpty() && !tabs.isEmpty()) {
-            // Re-selecting the current tab is a no-op unless we are in a level.
-        }
+        disposeTabScreen();
         selectedTab = index;
-        updateTabStyles();
-        showTabRoot();
-    }
-
-    private void updateTabStyles() {
-        for (int i = 0; i < tabBar.getChildCount(); i++) {
-            View child = tabBar.getChildAt(i);
-            boolean selected = i == selectedTab;
-            child.setBackground(background(selected ? COLOR_ACCENT : COLOR_SURFACE, false));
-            if (child instanceof TextView) {
-                ((TextView) child).setTextColor(COLOR_TEXT);
-            }
-        }
-    }
-
-    private void showTabRoot() {
-        levels.clear();
-        levelContainer = null;
-        sections.clear();
-        content.removeAllViews();
-        if (selectedTab < 0 || selectedTab >= tabs.size()) return;
-        MediaClient.Item tab = tabs.get(selectedTab);
-        setMessage("Carregando " + tab.title + "…");
-        loadAsync(tab.id);
-    }
-
-    private void buildTabRoot(List<MediaClient.Item> children) {
-        content.removeAllViews();
-        sections.clear();
-        if (selectedTab < 0 || selectedTab >= tabs.size()) return;
-        MediaClient.Item tab = tabs.get(selectedTab);
-
-        if (isLibrary(tab)) {
-            content.addView(sectionHeader("Biblioteca"));
-            for (MediaClient.Item item : children) {
-                content.addView(row(item));
-            }
-            if (children.isEmpty()) content.addView(empty("Biblioteca vazia"));
-            setMessage("");
-            return;
-        }
-
-        List<MediaClient.Item> shelves = new ArrayList<MediaClient.Item>();
-        List<MediaClient.Item> playables = new ArrayList<MediaClient.Item>();
-        for (MediaClient.Item item : children) {
-            if (item.browsable) shelves.add(item);
-            else if (item.playable) playables.add(item);
-        }
-        if (shelves.isEmpty() && playables.isEmpty()) {
-            content.addView(empty("Nada para mostrar"));
-            setMessage("");
-            return;
-        }
-        for (MediaClient.Item shelf : shelves) {
-            LinearLayout cards = addShelf(shelf.title, shelf.id);
-            loadAsync(shelf.id);
-        }
-        if (!playables.isEmpty()) {
-            LinearLayout cards = addShelf("Tocar agora", null);
-            populateShelf(cards, playables);
-        }
-        setMessage("");
-    }
-
-    private boolean isLibrary(MediaClient.Item tab) {
-        return tab.id.endsWith("/library") || "Biblioteca".equalsIgnoreCase(tab.title);
-    }
-
-    private TextView sectionHeader(String title) {
-        TextView header = text(title, 18f, COLOR_TEXT, true);
-        LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        params.topMargin = dp(12);
-        params.bottomMargin = dp(8);
-        header.setLayoutParams(params);
-        return header;
-    }
-
-    private View empty(String message) {
-        TextView view = text(message, 14f, COLOR_TEXT_DIM, false);
-        view.setPadding(0, dp(16), 0, dp(16));
-        return view;
-    }
-
-    private LinearLayout addShelf(String title, String id) {
-        LinearLayout block = new LinearLayout(this);
-        block.setOrientation(LinearLayout.VERTICAL);
-        block.addView(sectionHeader(title));
-
-        HorizontalScrollView scroll = new HorizontalScrollView(this);
-        scroll.setHorizontalScrollBarEnabled(false);
-        LinearLayout cards = new LinearLayout(this);
-        cards.setOrientation(LinearLayout.HORIZONTAL);
-        scroll.addView(cards, new HorizontalScrollView.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
-        block.addView(scroll);
-
-        content.addView(block);
-        if (id != null) sections.put(id, cards);
-        return cards;
-    }
-
-    private void populateShelf(LinearLayout cards, List<MediaClient.Item> items) {
-        cards.removeAllViews();
-        for (MediaClient.Item item : items) {
-            cards.addView(card(item));
-        }
-        for (int i = 0; i < cards.getChildCount(); i++) {
-            View child = cards.getChildAt(i);
-            if (i > 0) child.setNextFocusLeftId(cards.getChildAt(i - 1).getId());
-            if (i < cards.getChildCount() - 1) {
-                child.setNextFocusRightId(cards.getChildAt(i + 1).getId());
-            }
-            child.setNextFocusDownId(miniPlayer.getId());
-        }
-    }
-
-    private View card(final MediaClient.Item item) {
-        LinearLayout card = new LinearLayout(this);
-        card.setOrientation(LinearLayout.VERTICAL);
-        card.setFocusable(true);
-        card.setClickable(true);
-        card.setPadding(dp(6), dp(6), dp(6), dp(10));
-        card.setId(View.generateViewId());
-        LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(
-                dp(156), ViewGroup.LayoutParams.WRAP_CONTENT);
-        params.rightMargin = dp(12);
-        card.setLayoutParams(params);
-
-        ImageView cover = new ImageView(this);
-        cover.setScaleType(ImageView.ScaleType.CENTER_CROP);
-        cover.setBackgroundColor(0xFF2C2C2E);
-        card.addView(cover, new LinearLayout.LayoutParams(dp(144), dp(144)));
-        artwork.load(item.artworkUri, cover);
-
-        TextView title = text(item.title, 13f, COLOR_TEXT, true);
-        title.setMaxLines(2);
-        title.setEllipsize(TextUtils.TruncateAt.END);
-        title.setPadding(0, dp(6), 0, 0);
-        card.addView(title);
-
-        TextView subtitle = text(item.subtitle, 12f, COLOR_TEXT_DIM, false);
-        subtitle.setMaxLines(1);
-        subtitle.setEllipsize(TextUtils.TruncateAt.END);
-        card.addView(subtitle);
-
-        card.setOnClickListener(new View.OnClickListener() {
-            @Override
-            public void onClick(View v) {
-                onItemClick(item);
-            }
-        });
-        card.setOnLongClickListener(new View.OnLongClickListener() {
-            @Override
-            public boolean onLongClick(View v) {
-                showItemActions(item);
-                return true;
-            }
-        });
-        applyFocusBackground(card, COLOR_SURFACE);
-        return card;
-    }
-
-    private View row(final MediaClient.Item item) {
-        LinearLayout row = new LinearLayout(this);
-        row.setOrientation(LinearLayout.HORIZONTAL);
-        row.setGravity(Gravity.CENTER_VERTICAL);
-        row.setFocusable(true);
-        row.setClickable(true);
-        row.setPadding(dp(8), dp(8), dp(8), dp(8));
-        row.setId(View.generateViewId());
-        LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        params.bottomMargin = dp(6);
-        row.setLayoutParams(params);
-
-        ImageView cover = new ImageView(this);
-        cover.setScaleType(ImageView.ScaleType.CENTER_CROP);
-        cover.setBackgroundColor(0xFF2C2C2E);
-        LinearLayout.LayoutParams coverParams = new LinearLayout.LayoutParams(dp(56), dp(56));
-        coverParams.rightMargin = dp(12);
-        row.addView(cover, coverParams);
-        artwork.load(item.artworkUri, cover);
-
-        LinearLayout textBlock = new LinearLayout(this);
-        textBlock.setOrientation(LinearLayout.VERTICAL);
-        TextView title = text(item.title, 15f, COLOR_TEXT, true);
-        title.setMaxLines(1);
-        title.setEllipsize(TextUtils.TruncateAt.END);
-        TextView subtitle = text(item.subtitle, 12f, COLOR_TEXT_DIM, false);
-        subtitle.setMaxLines(1);
-        subtitle.setEllipsize(TextUtils.TruncateAt.END);
-        textBlock.addView(title);
-        textBlock.addView(subtitle);
-        row.addView(textBlock, new LinearLayout.LayoutParams(0,
-                ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
-
-        row.setOnClickListener(new View.OnClickListener() {
-            @Override
-            public void onClick(View v) {
-                onItemClick(item);
-            }
-        });
-        row.setOnLongClickListener(new View.OnLongClickListener() {
-            @Override
-            public boolean onLongClick(View v) {
-                showItemActions(item);
-                return true;
-            }
-        });
-        applyFocusBackground(row, COLOR_SURFACE);
-        return row;
-    }
-
-    private void onItemClick(MediaClient.Item item) {
-        if (item.playable) {
-            client.play(item.id);
-            setMessage("Tocando " + item.title);
-        } else if (item.browsable) {
-            pushLevel(item);
+        topBar.select(index);
+        MediaClient.Item tab = tabs.get(index);
+        int kind = kindOf(tab);
+        View view;
+        if (kind == KIND_HOME) {
+            homeScreen = new HomeScreen(this, this, artwork);
+            homeScreen.setDownFocusId(miniPlayer.getId());
+            view = homeScreen.view();
+            screenHost.addView(view, new FrameLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+            homeScreen.bind(tab);
         } else {
-            setMessage("Item não reproduzível");
-        }
-    }
-
-    // --- one drill-down level -------------------------------------------------------
-
-    private void pushLevel(MediaClient.Item item) {
-        levels.add(new Level(item.id, item.title));
-        renderLevel();
-        loadAsync(item.id);
-    }
-
-    private void renderLevel() {
-        content.removeAllViews();
-        sections.clear();
-        if (levels.isEmpty()) return;
-        Level level = levels.get(levels.size() - 1);
-
-        LinearLayout header = new LinearLayout(this);
-        header.setOrientation(LinearLayout.HORIZONTAL);
-        header.setGravity(Gravity.CENTER_VERTICAL);
-        header.setPadding(0, dp(8), 0, dp(8));
-        TextView back = button("‹ Voltar", new View.OnClickListener() {
-            @Override
-            public void onClick(View v) {
-                backOneLevel();
+            if (kind == KIND_RADIO) {
+                tabCollection = new RadioScreen(this, this, artwork);
+            } else {
+                tabCollection = new LibraryScreen(this, this, artwork);
             }
-        });
-        LinearLayout.LayoutParams backParams = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        backParams.rightMargin = dp(12);
-        header.addView(back, backParams);
-        header.addView(text(level.title, 18f, COLOR_TEXT, true));
-        content.addView(header);
-
-        levelContainer = new LinearLayout(this);
-        levelContainer.setOrientation(LinearLayout.VERTICAL);
-        content.addView(levelContainer);
-        setMessage("Carregando " + level.title + "…");
+            view = tabCollection.view();
+            screenHost.addView(view, new FrameLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+            tabCollection.bind(tab.id, label(tab));
+        }
+        setStatus("Carregando " + label(tab) + "…");
     }
 
-    private void fillLevel(List<MediaClient.Item> children) {
-        if (levelContainer == null) return;
-        levelContainer.removeAllViews();
-        if (children.isEmpty()) {
-            levelContainer.addView(empty("Nada aqui"));
-        } else {
-            for (MediaClient.Item item : children) levelContainer.addView(row(item));
+    private void disposeTabScreen() {
+        if (homeScreen != null) {
+            homeScreen.dispose();
+            homeScreen = null;
         }
-        setMessage("");
+        if (tabCollection != null) {
+            tabCollection.dispose();
+            tabCollection = null;
+        }
+        screenHost.removeAllViews();
     }
 
-    private void backOneLevel() {
-        if (levels.isEmpty()) return;
-        levels.remove(levels.size() - 1);
-        if (levels.isEmpty()) {
-            showTabRoot();
-        } else {
-            renderLevel();
-            loadAsync(levels.get(levels.size() - 1).id);
+    // --- ScreenHost ---------------------------------------------------------------
+
+    @Override
+    public void loadChildren(String parentId, ChildSink sink) {
+        pending.put(parentId, sink);
+        loadAsync(parentId);
+    }
+
+    @Override
+    public void forgetChildren(ChildSink sink) {
+        List<String> drop = new ArrayList<String>();
+        for (Map.Entry<String, ChildSink> entry : pending.entrySet()) {
+            if (entry.getValue() == sink) drop.add(entry.getKey());
         }
+        for (String key : drop) pending.remove(key);
     }
 
     private void loadAsync(final String parentId) {
@@ -1113,7 +522,164 @@ public final class OneActivity extends Activity
         });
     }
 
-    // --- playback ------------------------------------------------------------------
+    @Override
+    public void play(MediaClient.Item item) {
+        if (item == null) return;
+        if (item.playable) {
+            client.play(item.id);
+            setStatus("Tocando " + item.title);
+        } else if (item.browsable) {
+            openCollection(item.title, item.id, false);
+        } else {
+            setStatus("Item não reproduzível");
+        }
+    }
+
+    @Override
+    public void playId(String mediaId, String label) {
+        client.play(mediaId);
+        setStatus("Tocando " + label);
+    }
+
+    @Override
+    public void togglePlayPause() {
+        client.togglePlayPause();
+    }
+
+    @Override
+    public void skipNext() {
+        client.skipNext();
+    }
+
+    @Override
+    public void skipPrevious() {
+        client.skipPrevious();
+    }
+
+    @Override
+    public void seek(long positionMs) {
+        client.seekTo(positionMs);
+    }
+
+    @Override
+    public void status(String message) {
+        setStatus(message);
+    }
+
+    @Override
+    public void openSearch() {
+        searchScreen.open();
+    }
+
+    @Override
+    public void openUpdates() {
+        updatesScreen.open();
+        updater.check();
+    }
+
+    @Override
+    public void openPlayer() {
+        if (!latest.hasSession) {
+            setStatus("Nada tocando");
+            return;
+        }
+        playerScreen.update(latest);
+        playerScreen.view().setVisibility(View.VISIBLE);
+        playerScreen.focus();
+    }
+
+    @Override
+    public void openCollection(String title, String parentId, boolean grid) {
+        closeCollectionOverlay();
+        overlayCollection = new CollectionScreen(this, this, artwork,
+                grid ? CollectionScreen.GRID : CollectionScreen.LIST, Icons.NOTE);
+        collectionHost.removeAllViews();
+        collectionHost.addView(overlayCollection.view(), new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+        overlayCollection.setExitOnRootBack(true);
+        collectionHost.setVisibility(View.VISIBLE);
+        overlayCollection.bind(parentId, title);
+        setStatus("");
+    }
+
+    @Override
+    public void sessionActions() {
+        showActions("Ações", latest.title, null);
+    }
+
+    @Override
+    public void itemActions(MediaClient.Item item) {
+        if (item == null) return;
+        showActions(item.title, "Aplicar a " + item.title, item);
+    }
+
+    @Override
+    public void createStation() {
+        MediaClient.Action station = latest.findActionEndingWith(ACTION_CREATE_STATION);
+        if (station == null) {
+            setStatus("Criar estação indisponível nesta faixa");
+            return;
+        }
+        client.sendCustomAction(station.action);
+        setStatus("Criando estação…");
+    }
+
+    @Override
+    public void closePlayer() {
+        playerScreen.close();
+        if (!hasTouch) focusSelectedTab();
+    }
+
+    @Override
+    public void closeSearch() {
+        searchScreen.close();
+        if (!hasTouch) focusSelectedTab();
+    }
+
+    @Override
+    public void closeActions() {
+        actionSheet.hide();
+        if (!hasTouch) focusSelectedTab();
+    }
+
+    @Override
+    public void closeUpdates() {
+        updatesScreen.close();
+        if (!hasTouch) focusSelectedTab();
+    }
+
+    @Override
+    public void closeAccount() {
+        accountScreen.close();
+        if (!hasTouch) focusSelectedTab();
+    }
+
+    @Override
+    public void closeCollection() {
+        closeCollectionOverlay();
+        if (!hasTouch) focusSelectedTab();
+    }
+
+    private void closeCollectionOverlay() {
+        if (overlayCollection != null) {
+            overlayCollection.dispose();
+            overlayCollection = null;
+        }
+        collectionHost.removeAllViews();
+        collectionHost.setVisibility(View.GONE);
+    }
+
+    @Override
+    public int downFocusId() {
+        return miniPlayer == null ? View.NO_ID : miniPlayer.getId();
+    }
+
+    @Override
+    public boolean isTv() {
+        return !hasTouch;
+    }
+
+    // --- playback -----------------------------------------------------------------
 
     @Override
     public void onPlayback(MediaClient.Snapshot snapshot) {
@@ -1126,135 +692,70 @@ public final class OneActivity extends Activity
         boolean visible = snapshot.hasSession
                 && (snapshot.title.length() > 0 || snapshot.playing);
         miniPlayer.setVisibility(visible ? View.VISIBLE : View.GONE);
-        nowPlayingButton.setVisibility(visible ? View.VISIBLE : View.GONE);
-        if (visible) {
-            miniTitle.setText(snapshot.title);
-            miniArtist.setText(join(snapshot.artist, snapshot.album));
-            miniPlay.setText(snapshot.playing ? "▌▌" : "▶");
-            if (snapshot.artwork != null
-                    && snapshot.artwork.hashCode() != lastArtworkHash) {
-                lastArtworkHash = snapshot.artwork.hashCode();
-                miniCover.setImageBitmap(snapshot.artwork);
+        if (visible) miniPlayer.update(snapshot);
+        if (visible != miniVisible) {
+            miniVisible = visible;
+            base.setPadding(0, 0, 0, visible ? Tokens.dp(84) : 0);
+        }
+        if (playerScreen.view().getVisibility() == View.VISIBLE) {
+            playerScreen.update(snapshot);
+        }
+    }
+
+    private final Runnable ticker = new Runnable() {
+        @Override
+        public void run() {
+            if (latest.playing) client.refreshPlayback();
+            main.postDelayed(this, TICK_MS);
+        }
+    };
+
+    // --- actions ------------------------------------------------------------------
+
+    private void showActions(String heading, String subtitle, final MediaClient.Item item) {
+        final List<MediaClient.Action> actions = latest.actions;
+        if (actions.isEmpty()) {
+            setStatus("Nenhuma ação disponível nesta sessão");
+            return;
+        }
+        actionSheet.show(heading, subtitle, actions, new ActionSheet.Listener() {
+            @Override
+            public void onAction(MediaClient.Action action) {
+                if (item == null) {
+                    client.sendCustomAction(action.action);
+                    String feedback = feedback(action.action);
+                    actionSheet.setFeedback(feedback);
+                    setStatus(feedback);
+                } else {
+                    runItemAction(item, action);
+                }
             }
-        }
-        if (playerOverlay.getVisibility() != View.VISIBLE) return;
-        playerTitle.setText(snapshot.title);
-        playerArtist.setText(join(snapshot.artist, snapshot.album));
-        if (snapshot.artwork != null) playerCover.setImageBitmap(snapshot.artwork);
-        playerPlay.setText(snapshot.playing ? "▌▌" : "▶");
-        playerStation.setVisibility(
-                snapshot.findActionEndingWith(ACTION_CREATE_STATION) != null
-                        ? View.VISIBLE : View.GONE);
-        if (!seekTracking) {
-            int progress = snapshot.durationMs > 0L
-                    ? (int) (snapshot.positionMs * 1000L / snapshot.durationMs) : 0;
-            seekBar.setProgress(Math.max(0, Math.min(1000, progress)));
-        }
-        playerTime.setText(format(snapshot.positionMs) + " / " + format(snapshot.durationMs));
-    }
 
-    private long durationFor(int progress) {
-        return latest.durationMs > 0L ? latest.durationMs * progress / 1000L : 0L;
-    }
-
-    private static String join(String first, String second) {
-        if (first.length() == 0) return second;
-        if (second.length() == 0 || second.equals(first)) return first;
-        return first + " · " + second;
-    }
-
-    private static String format(long millis) {
-        if (millis <= 0L) return "0:00";
-        long seconds = millis / 1000L;
-        return String.format(Locale.ROOT, "%d:%02d", seconds / 60L, seconds % 60L);
-    }
-
-    private void openPlayer() {
-        if (!latest.hasSession) {
-            setMessage("Nada tocando");
-            return;
-        }
-        playerOverlay.setVisibility(View.VISIBLE);
-        applyPlayback();
-        playerPlay.requestFocus();
-    }
-
-    private void closePlayer() {
-        playerOverlay.setVisibility(View.GONE);
-    }
-
-    private void showActions() {
-        final List<MediaClient.Action> actions = latest.actions;
-        if (actions.isEmpty()) {
-            setMessage("Nenhuma ação disponível nesta sessão");
-            return;
-        }
-        String[] titles = new String[actions.size()];
-        for (int i = 0; i < actions.size(); i++) {
-            MediaClient.Action action = actions.get(i);
-            titles[i] = action.title.length() > 0 ? action.title : action.action;
-        }
-        new AlertDialog.Builder(this)
-                .setTitle("Ações da sessão")
-                .setItems(titles, new DialogInterface.OnClickListener() {
-                    @Override
-                    public void onClick(DialogInterface dialog, int which) {
-                        MediaClient.Action action = actions.get(which);
-                        client.sendCustomAction(action.action);
-                        setMessage(feedback(action.action));
-                    }
-                })
-                .setNegativeButton("Fechar", null)
-                .show();
-    }
-
-    private void createStation() {
-        MediaClient.Action station = latest.findActionEndingWith(ACTION_CREATE_STATION);
-        if (station == null) {
-            setMessage("Criar estação indisponível nesta faixa");
-            return;
-        }
-        client.sendCustomAction(station.action);
-        setMessage("Criando estação…");
-    }
-
-    /** Long-press on a card/row: the session actions applied to that item. */
-    private void showItemActions(final MediaClient.Item item) {
-        final List<MediaClient.Action> actions = latest.actions;
-        if (actions.isEmpty()) {
-            setMessage("Nenhuma ação disponível nesta sessão");
-            return;
-        }
-        String[] titles = new String[actions.size()];
-        for (int i = 0; i < actions.size(); i++) {
-            MediaClient.Action action = actions.get(i);
-            titles[i] = action.title.length() > 0 ? action.title : action.action;
-        }
-        new AlertDialog.Builder(this)
-                .setTitle(item.title)
-                .setItems(titles, new DialogInterface.OnClickListener() {
-                    @Override
-                    public void onClick(DialogInterface dialog, int which) {
-                        runItemAction(item, actions.get(which));
-                    }
-                })
-                .setNegativeButton("Fechar", null)
-                .show();
+            @Override
+            public void onClose() {
+                closeActions();
+            }
+        });
     }
 
     private void runItemAction(final MediaClient.Item item, final MediaClient.Action action) {
         if (item.playable) {
-            setMessage(action.action.endsWith(ACTION_CREATE_STATION)
-                    ? "Criando estação…" : action.title + "…");
+            String message = action.action.endsWith(ACTION_CREATE_STATION)
+                    ? "Criando estação…" : action.title + "…";
+            actionSheet.setFeedback(message);
+            setStatus(message);
             client.play(item.id);
             pollAction(action.action, SystemClock.elapsedRealtime() + ACTION_TIMEOUT_MS);
             return;
         }
         if (latest.hasAction(action.action)) {
             client.sendCustomAction(action.action);
-            setMessage(feedback(action.action));
+            String feedback = feedback(action.action);
+            actionSheet.setFeedback(feedback);
+            setStatus(feedback);
         } else {
-            setMessage("Indisponível para este item");
+            actionSheet.setFeedback("Indisponível para este item");
+            setStatus("Indisponível para este item");
         }
     }
 
@@ -1266,13 +767,16 @@ public final class OneActivity extends Activity
                 MediaClient.Snapshot snapshot = latest;
                 if (snapshot.playing && snapshot.hasAction(actionId)) {
                     client.sendCustomAction(actionId);
-                    setMessage(feedback(actionId));
+                    String feedback = feedback(actionId);
+                    actionSheet.setFeedback(feedback);
+                    setStatus(feedback);
                     return;
                 }
                 if (SystemClock.elapsedRealtime() < deadline) {
                     main.postDelayed(this, 150L);
                 } else {
-                    setMessage("Indisponível para este item");
+                    actionSheet.setFeedback("Indisponível para este item");
+                    setStatus("Indisponível para este item");
                 }
             }
         }, 150L);
@@ -1285,99 +789,7 @@ public final class OneActivity extends Activity
         return "Ação enviada";
     }
 
-    private final Runnable ticker = new Runnable() {
-        @Override
-        public void run() {
-            if (latest.playing) client.refreshPlayback();
-            main.postDelayed(this, TICK_MS);
-        }
-    };
-
-    // --- search ---------------------------------------------------------------------
-
-    private void openSearch() {
-        searchOverlay.setVisibility(View.VISIBLE);
-        searchStatus.setText("");
-        searchInput.requestFocus();
-    }
-
-    private void closeSearch() {
-        searchOverlay.setVisibility(View.GONE);
-    }
-
-    private void submitSearch() {
-        final String term = searchInput.getText().toString().trim();
-        if (term.length() == 0) return;
-        searchStatus.setText("Buscando \"" + term + "\"…");
-        searchResults.removeAllViews();
-        catalog.search(term, new CatalogSearch.Callback() {
-            @Override
-            public void onResults(List<CatalogSearch.Result> results) {
-                searchResults.removeAllViews();
-                if (results.isEmpty()) {
-                    searchStatus.setText("Nenhum resultado");
-                    return;
-                }
-                searchStatus.setText(results.size() + " resultado(s)");
-                for (CatalogSearch.Result result : results) {
-                    searchResults.addView(searchRow(result));
-                }
-            }
-
-            @Override
-            public void onFailure(String message, boolean tokenMissing) {
-                searchStatus.setText(tokenMissing
-                        ? message + " — use a busca do Apple Music abaixo"
-                        : message);
-            }
-        });
-    }
-
-    private View searchRow(final CatalogSearch.Result result) {
-        LinearLayout row = new LinearLayout(this);
-        row.setOrientation(LinearLayout.HORIZONTAL);
-        row.setGravity(Gravity.CENTER_VERTICAL);
-        row.setFocusable(true);
-        row.setClickable(true);
-        row.setPadding(dp(8), dp(8), dp(8), dp(8));
-        LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        params.bottomMargin = dp(6);
-        row.setLayoutParams(params);
-
-        ImageView cover = new ImageView(this);
-        cover.setScaleType(ImageView.ScaleType.CENTER_CROP);
-        cover.setBackgroundColor(0xFF2C2C2E);
-        LinearLayout.LayoutParams coverParams = new LinearLayout.LayoutParams(dp(56), dp(56));
-        coverParams.rightMargin = dp(12);
-        row.addView(cover, coverParams);
-        artwork.load(result.artworkUrl, cover);
-
-        LinearLayout textBlock = new LinearLayout(this);
-        textBlock.setOrientation(LinearLayout.VERTICAL);
-        TextView title = text(result.title, 15f, COLOR_TEXT, true);
-        title.setMaxLines(1);
-        title.setEllipsize(TextUtils.TruncateAt.END);
-        TextView subtitle = text(result.kind + " · " + result.artist, 12f, COLOR_TEXT_DIM, false);
-        subtitle.setMaxLines(1);
-        subtitle.setEllipsize(TextUtils.TruncateAt.END);
-        textBlock.addView(title);
-        textBlock.addView(subtitle);
-        row.addView(textBlock, new LinearLayout.LayoutParams(0,
-                ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
-
-        row.setOnClickListener(new View.OnClickListener() {
-            @Override
-            public void onClick(View v) {
-                client.play(result.id);
-                searchStatus.setText("Tocando " + result.title);
-            }
-        });
-        applyFocusBackground(row, COLOR_SURFACE);
-        return row;
-    }
-
-    // --- account / version ------------------------------------------------------------
+    // --- account / sign-in --------------------------------------------------------
 
     /**
      * Starts the engine's Apple ID sign-in from our UI.
@@ -1391,7 +803,8 @@ public final class OneActivity extends Activity
      * sign-in itself. BACK returns to this activity; when the sheet is closed (X) or the
      * sign-in finishes, the host activity is finished by {@link #watchAuthClose(Activity)}.
      */
-    private void openAccount() {
+    @Override
+    public void openAccount() {
         refreshOnResume = true;
         final Application app = getApplication();
         final ActivityWatcher watcher = new ActivityWatcher(MediaClient.ACCOUNT_ACTIVITY) {
@@ -1480,7 +893,7 @@ public final class OneActivity extends Activity
             startActivity(intent);
         } catch (Throwable t) {
             Log.e(TAG, "cannot open the engine account screen", t);
-            setMessage("Não foi possível abrir o Apple Music");
+            setStatus("Não foi possível abrir o Apple Music");
         }
     }
 
@@ -1524,116 +937,17 @@ public final class OneActivity extends Activity
         }
     }
 
-    private void showUpdates() {
-        LinearLayout panel = new LinearLayout(this);
-        panel.setOrientation(LinearLayout.VERTICAL);
-        panel.setPadding(dp(20), dp(8), dp(20), 0);
-
-        updateMessage = text("", 14f, COLOR_TEXT, false);
-        updateMessage.setLineSpacing(dp(2), 1f);
-        panel.addView(updateMessage, new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
-
-        updateProgress = new ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal);
-        updateProgress.setMax(100);
-        updateProgress.setVisibility(View.GONE);
-        LinearLayout.LayoutParams progressParams = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        progressParams.topMargin = dp(12);
-        panel.addView(updateProgress, progressParams);
-
-        LinearLayout actions = new LinearLayout(this);
-        actions.setOrientation(LinearLayout.HORIZONTAL);
-        actions.setGravity(Gravity.END);
-        updateCheckButton = button("Verificar", new View.OnClickListener() {
-            @Override
-            public void onClick(View v) {
-                updater.check();
-            }
-        });
-        updateDownloadButton = button("Baixar e instalar", new View.OnClickListener() {
-            @Override
-            public void onClick(View v) {
-                updater.download(pendingUpdate);
-            }
-        });
-        updateCancelButton = button("Cancelar", new View.OnClickListener() {
-            @Override
-            public void onClick(View v) {
-                updater.cancel();
-            }
-        });
-        actions.addView(updateCheckButton);
-        actions.addView(updateDownloadButton, topBarButtonParams());
-        actions.addView(updateCancelButton, topBarButtonParams());
-        LinearLayout.LayoutParams actionParams = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        actionParams.topMargin = dp(16);
-        panel.addView(actions, actionParams);
-
-        updateDialog = new AlertDialog.Builder(this)
-                .setTitle("Atualizações")
-                .setView(panel)
-                .setPositiveButton("Fechar", null)
-                .create();
-        updateDialog.setOnDismissListener(new DialogInterface.OnDismissListener() {
-            @Override
-            public void onDismiss(DialogInterface dialog) {
-                updateDialog = null;
-                updateMessage = null;
-                updateProgress = null;
-                updateCheckButton = null;
-                updateDownloadButton = null;
-                updateCancelButton = null;
-            }
-        });
-        updateDialog.show();
-        pendingUpdate = updater.currentState().update;
-        renderUpdateState(updater.currentState());
-        updater.check();
-    }
+    // --- updates -------------------------------------------------------------------
 
     @Override
     public void onUpdateState(UpdateManager.State state) {
-        if (state.update != null) pendingUpdate = state.update;
-        if (updateDialog != null && updateDialog.isShowing()) {
-            renderUpdateState(state);
-            return;
-        }
+        updatesScreen.setState(state);
+        if (updatesScreen.isOpen()) return;
         if (state.phase == UpdateManager.AVAILABLE && state.update != null) {
-            setMessage("Atualização " + state.update.version + " disponível — toque em Atualizações");
+            setStatus("Atualização " + state.update.version + " disponível — toque em Atualizações");
         } else if (state.phase == UpdateManager.INSTALLED || state.phase == UpdateManager.ERROR) {
-            setMessage(state.message);
+            setStatus(state.message);
         }
-    }
-
-    private void renderUpdateState(UpdateManager.State state) {
-        if (updateMessage == null) return;
-        String message = state.message;
-        if (state.phase == UpdateManager.IDLE || state.message == null || state.message.length() == 0) {
-            message = "Instalada: " + Version.NAME + " (" + Version.CODE + ")"
-                    + "\nEngine: " + engineVersion()
-                    + "\n\nVerifique se há uma versão nova.";
-        } else if (state.phase == UpdateManager.CHECKING) {
-            message = message + "\nInstalada: " + Version.NAME + " (" + Version.CODE + ")";
-        }
-        updateMessage.setText(message);
-
-        boolean downloading = state.phase == UpdateManager.DOWNLOADING;
-        updateProgress.setVisibility(downloading ? View.VISIBLE : View.GONE);
-        if (downloading && state.progress >= 0) updateProgress.setProgress(state.progress);
-        setVisible(updateCheckButton, state.phase == UpdateManager.IDLE
-                || state.phase == UpdateManager.NONE
-                || state.phase == UpdateManager.INSTALLED
-                || state.phase == UpdateManager.ERROR
-                || state.phase == UpdateManager.AVAILABLE);
-        setVisible(updateDownloadButton,
-                state.phase == UpdateManager.AVAILABLE && state.update != null);
-        setVisible(updateCancelButton, downloading);
-    }
-
-    private static void setVisible(View view, boolean visible) {
-        if (view != null) view.setVisibility(visible ? View.VISIBLE : View.GONE);
     }
 
     private String engineVersion() {
@@ -1653,11 +967,11 @@ public final class OneActivity extends Activity
      */
     private void handleInstallStatus(Intent intent) {
         if (intent == null) return;
-        int status = intent.getIntExtra(PackageInstaller.EXTRA_STATUS, Integer.MIN_VALUE);
-        if (status == Integer.MIN_VALUE) return;
+        int installStatus = intent.getIntExtra(PackageInstaller.EXTRA_STATUS, Integer.MIN_VALUE);
+        if (installStatus == Integer.MIN_VALUE) return;
         // Mark handled so a recreation of the activity does not replay the dialog.
         intent.putExtra(PackageInstaller.EXTRA_STATUS, Integer.MIN_VALUE);
-        if (status == PackageInstaller.STATUS_PENDING_USER_ACTION) {
+        if (installStatus == PackageInstaller.STATUS_PENDING_USER_ACTION) {
             Intent confirm = intent.getParcelableExtra(Intent.EXTRA_INTENT);
             intent.removeExtra(Intent.EXTRA_INTENT);
             if (confirm == null) {
@@ -1674,7 +988,7 @@ public final class OneActivity extends Activity
             return;
         }
         String detail = intent.getStringExtra(PackageInstaller.EXTRA_STATUS_MESSAGE);
-        boolean ok = status == PackageInstaller.STATUS_SUCCESS;
+        boolean ok = installStatus == PackageInstaller.STATUS_SUCCESS;
         updater.onInstallResult(ok, ok
                 ? "Atualização instalada."
                 : "Instalação não concluída"
@@ -1688,28 +1002,67 @@ public final class OneActivity extends Activity
         handleInstallStatus(intent);
     }
 
-    // --- misc -------------------------------------------------------------------------
+    // --- misc ----------------------------------------------------------------------
 
-    private void setMessage(String message) {
+    private void setStatus(String message) {
         status.setText(message == null ? "" : message);
+        status.setVisibility(message == null || message.length() == 0
+                ? View.GONE : View.VISIBLE);
         Log.i(TAG, "status: " + message);
+    }
+
+    private boolean backInTabScreen() {
+        return tabCollection != null && tabCollection.back();
+    }
+
+    /**
+     * Android 15+ (targetSdk 35/36) enables predictive back by default, so the system no
+     * longer calls {@link #onBackPressed()}: the same close order is registered on the
+     * {@link OnBackInvokedDispatcher} and the legacy method stays for API 29-32 devices.
+     */
+    private void registerBackHandler() {
+        if (Build.VERSION.SDK_INT < 33) return;
+        getOnBackInvokedDispatcher().registerOnBackInvokedCallback(
+                OnBackInvokedDispatcher.PRIORITY_DEFAULT,
+                new OnBackInvokedCallback() {
+                    @Override
+                    public void onBackInvoked() {
+                        if (!handleBack()) finish();
+                    }
+                });
+    }
+
+    private boolean handleBack() {
+        if (actionSheet.isOpen()) {
+            closeActions();
+            return true;
+        }
+        if (updatesScreen.isOpen()) {
+            closeUpdates();
+            return true;
+        }
+        if (accountScreen.isOpen()) {
+            closeAccount();
+            return true;
+        }
+        if (searchScreen.isOpen()) {
+            closeSearch();
+            return true;
+        }
+        if (playerScreen.view().getVisibility() == View.VISIBLE) {
+            closePlayer();
+            return true;
+        }
+        if (overlayCollection != null) {
+            closeCollection();
+            return true;
+        }
+        return backInTabScreen();
     }
 
     @Override
     public void onBackPressed() {
-        if (playerOverlay.getVisibility() == View.VISIBLE) {
-            closePlayer();
-            return;
-        }
-        if (searchOverlay.getVisibility() == View.VISIBLE) {
-            closeSearch();
-            return;
-        }
-        if (!levels.isEmpty()) {
-            backOneLevel();
-            return;
-        }
-        super.onBackPressed();
+        if (!handleBack()) super.onBackPressed();
     }
 
     @Override
@@ -1717,6 +1070,9 @@ public final class OneActivity extends Activity
         main.removeCallbacks(ticker);
         main.removeCallbacks(reconnect);
         if (authPoll != null) main.removeCallbacks(authPoll);
+        disposeTabScreen();
+        if (overlayCollection != null) overlayCollection.dispose();
+        if (searchScreen != null) searchScreen.dispose();
         if (client != null) client.disconnect();
         if (artwork != null) artwork.shutdown();
         if (catalog != null) catalog.shutdown();

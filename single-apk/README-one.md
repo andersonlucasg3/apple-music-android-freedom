@@ -5,49 +5,86 @@ sem companion, sem `sharedUserId` de terceiros, sem recursos próprios. A activi
 engine (`com.apple.android.music.common.MainActivity`, login) continua no APK; só deixa
 de ser a `LAUNCHER`.
 
-- UI: [`single-apk/single-ui`](single-ui) — package `com.anderson.applemusic.one`.
+- UI: [`single-apk/single-ui`](single-ui) — package `com.anderson.applemusic.one`, agora
+  organizado em `theme/`, `widget/`, `screen/` e `media/`.
 - Build: [`single-apk/build-one-apk.ps1`](build-one-apk.ps1).
-- Empacotamento (dex extra + manifest binário): [`tools/axml_inject.py`](tools/axml_inject.py)
+- Empacotamento (dex extra + manifest binário + assets/one): [`tools/axml_inject.py`](tools/axml_inject.py)
   e [`tools/pack_single_apk.py`](tools/pack_single_apk.py), herdados do spike da fase A.
+- Evidências desta revisão visual: [`evidence/revamp-one-*`](evidence).
 
 ## Por que funciona
 
 O engine foi minerado pelo R8: qualquer classe/extensão de terceiro (AndroidX, Kotlin,
 Compose, Coil) colide com a cópia que já existe no dex do engine. A UI aqui é **só Java
 + APIs do framework** (`android.app.Activity`, `MediaBrowser`/`MediaController`,
-`HttpURLConnection`, `org.json`, `LruCache`, `GradientDrawable`, `SeekBar`), **sem `res/`**
-e **sem `R.*`** — as únicas classes no dex gerado são `com.anderson.applemusic.one.*`
-(normais + anônimas), então ele convive com o dex do engine na posição `classesN.dex`.
+`HttpURLConnection`, `org.json`, `LruCache`, `GradientDrawable`, `Path`, `SeekBar`), **sem
+`res/`** e **sem `R.*`** — as únicas classes no dex gerado são
+`com.anderson.applemusic.one.*` (normais + anônimas), então ele convive com o dex do engine
+na posição `classesN.dex`. A auditoria do build falha se qualquer classe de fora aparecer.
 
 ## Módulo da UI
 
 Não há módulo Gradle: o build é `javac --release 8` + `d8 --min-api 29`, compilando contra
-`android-36` (compileSdk 36), sem dependências e sem buildConfig. Isso é o mesmo caminho
-reprodutível que a fase A usou.
+`android-36` (compileSdk 36), sem dependências e sem buildConfig. Os **assets** (Inter) são
+copiados para dentro do APK em `assets/one/` (ver **Build**).
 
-| Arquivo | Papel |
+### Estrutura de pacotes
+
+| Pacote | Arquivos | Papel |
+|---|---|---|
+| `theme/` | `Tokens`, `Inter`, `Shapes`, `ColorArt` | design tokens (cores/raios/tipo/escala), tipografia Inter via assets, `GradientDrawable` arredondado + `clipToOutline`, cor dominante da capa |
+| `widget/` | `TopBar`, `TabView`, `MiniPlayer`, `CoverCard`, `SeeAllCard`, `ShelfView`, `ListRow`, `SectionHeader`, `ActionSheet`, `EmptyState`, `Skeleton`, `Pill`, `CircleButton`, `Focus`, `Icons`, `IconView` | componentes reutilizáveis; ícones desenhados em `Path` |
+| `screen/` | `HomeScreen`, `LibraryScreen`, `RadioScreen`, `CollectionScreen`, `NowPlayingScreen`, `SearchScreen`, `UpdatesScreen`, `AccountScreen` + `ScreenHost`/`ChildSink` | telas e navegação; não há `Fragment`/AndroidX |
+| `media/` | `MediaClient`, `ArtworkLoader`, `CatalogSearch` | `MediaBrowser`/`MediaController` do engine, capas, busca na `amp-api` |
+| `one` | `OneActivity`, `UpdateManager`, `Version` | shell (activity, overlays, updater, versão gerada no build) |
+
+`ScreenHost` é o contrato mínimo entre `OneActivity` e as telas: assinar um nó do browse,
+tocar/enviar ação, abrir/fechar overlays e escrever na linha de status. As telas não
+conhecem `MediaBrowser`, updater nem reflexão.
+
+## Design system
+
+Tokens espelhados dos companions Compose (`tv-app/TvTheme.kt`, `car-app/Theme.kt`):
+
+| Token | Valor |
 |---|---|
-| `OneActivity.java` | telas (abas, prateleiras, mini player, player cheio, busca), foco/toque, diálogo de atualização |
-| `MediaClient.java` | `MediaBrowser` no `MediaPlaybackService`, `__AUTO_ROOT__`, transporte, custom actions |
-| `ArtworkLoader.java` | capas por `HttpURLConnection`/`ContentResolver` + `LruCache` + `Executor` |
-| `CatalogSearch.java` | busca na `amp-api` com o developer token do engine (AES/GCM do AndroidKeyStore) |
-| `UpdateManager.java` | `updates.json` → comparação por ABI, download com progresso, SHA-256, `PackageInstaller` |
-| `Version.java` | **gerado no build** (`-PoneVersion`/`-PoneVersionCode`): `NAME`/`CODE` da UI, sem `R.*`/BuildConfig |
+| fundo | `#000000` (player: `#0A0A0B`) |
+| superfícies | `#1C1C1E` / hover `#2C2C2E` / pressed `#313134` |
+| texto | `#FFFFFF` / secundário `#8E8E93` |
+| accent | `#FA243C` |
+| trilha | `#3A3A3C` |
+| raios | card 16 dp, controle 14 dp, sheet 20 dp, capa pequena 8 dp |
+| tipo | display 34–36, seção 24–26, card 15–16, caption 12–13 (pesos 400/500/600/700) |
+| foco | escala 1.05 em 160 ms + contorno accent; toque = ripple, sem hover |
 
-O serviço é `com.apple.android.music/.player.MediaPlaybackService` (o shorthand
-`/.MediaPlaybackService` não existe; foi verificado no probe da fase A e no `core/`).
-
-Tema: a activity é injetada com `android:theme="@android:style/Theme.Material.NoActionBar"`
-(`0x0103022e`, mesmo id de API 29 a 36) e o `onCreate` reforça com
-`setTheme(android.R.style.Theme_Material_NoActionBar)`. Ícone: herdado do engine
-(a activity não declara `android:icon`). A UI trata os insets do sistema (edge-to-edge do
-targetSdk 36).
+- **Inter** (SIL OFL): os 4 TTFs estão em
+  [`single-ui/assets/fonts`](single-ui/assets/fonts) (copiados de
+  `tv-app/src/main/res/font`) e a licença em [`single-ui/assets/OFL.txt`](single-ui/assets/OFL.txt).
+  O build empacota tudo em `assets/one/`; `Inter.load()` usa
+  `Typeface.createFromAsset(assets, "one/fonts/inter_*.ttf")` e cai em `sans-serif` se o
+  asset não existir (ex.: build antigo do CI).
+- **Ícones**: `Icons.IconDrawable` desenha play, pause, prev, next, busca, conta, chevrons,
+  close, check, refresh, plus, home, rádio, biblioteca, nota, more e download em `Path`
+  sobre uma grade 24×24. Nada de `android.R.drawable`.
+- **Cards**: capa quadrada dominante com cantos 16 dp (`clipToOutline`), scrim
+  `GradientDrawable` linear na base, título/subtítulo com ellipsize e “Tocar” em accent.
+  “Ver tudo” é um card de superfície com chevron. Elevação é estática (2 dp), sem sombra
+  animada.
+- **TV**: `Focus` aplica 1.05/160 ms, contorno accent e troca de superfície; a hero é
+  full-bleed, então usa só o contorno (escala cortaria as bordas). As fileiras encadeiam
+  `nextFocusLeft/Right` e `nextFocusDown` (card → mini player). No emulador de TV —
+  que se anuncia como touchscreen — o modo D-pad vence por `leanback`/`uiMode`.
+- **Toque** (celular/carro): ripple limitado ao raio; nenhum estado de hover.
+- **Mini player**: barra persistente com capa 40 dp, título/artista e play/pause; tocar
+  fora do botão abre o player cheio; fica acima da busca e das telas.
+- **Skeleton**: blocos `#1C1C1E` com pulso de alpha substituem a tela até o catálogo
+  chegar (sem “piscar” de vazio → cheio).
 
 ## Build
 
 ```powershell
-./single-apk/build-one-apk.ps1 -PoneVersion 1.8.0           # versionCode 10800 derivado
-./single-apk/build-one-apk.ps1 -Abi arm64,arm32 -PoneVersion 1.8.0
+./single-apk/build-one-apk.ps1 -PoneVersion 1.9.0          # versionCode 10900 derivado
+./single-apk/build-one-apk.ps1 -Abi arm64,arm32 -PoneVersion 1.9.0
 ```
 
 O build compila a UI uma vez e gera, para cada ABI:
@@ -58,26 +95,27 @@ O build compila a UI uma vez e gera, para cada ABI:
 | arm32 | `.pipeline/rel160/AppleMusic-engine-arm32.apk` | `single-apk/out-one/AppleMusic-one-arm32.apk` |
 | x86 | `.pipeline/emulator/AppleMusic-engine-x86.apk` | `single-apk/out-one/AppleMusic-one-x86.apk` |
 
-Antes do `javac` o build gera `out-one/generated/.../Version.java` com `NAME = -PoneVersion` e
-`CODE = -PoneVersionCode` (derivado como `MAJOR*10000+MINOR*100+PATCH` quando omitido); é essa
-versão da UI — não o `7.0.0` do engine — que aparece no diálogo e que o updater compara.
+Antes do `javac` o build gera `out-one/generated/.../Version.java` com `NAME = -PoneVersion`
+e `CODE = -PoneVersionCode` (derivado como `MAJOR*10000+MINOR*100+PATCH`); é essa versão da
+UI — não o `7.0.0` do engine — que aparece no painel de Atualizações e que o updater
+compara.
 
-Passos por ABI: extrai o `AndroidManifest.xml` binário → injeta a activity (MAIN/LAUNCHER + tema)
-e `<uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES"/>` → empacota o dex
-novo como `classesN.dex` → `zipalign -p 4` → `apksigner` com `tools/tv-app-signing.p12`
-(alias `morphe`, senha `Morphe`) → verifica assinatura, `launchable-activity` e audita o dex com
-`dexdump`.
+Passos por ABI: extrai o `AndroidManifest.xml` binário → injeta a activity (MAIN/LAUNCHER +
+tema) e `<uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES"/>` →
+empacota o dex novo como `classesN.dex` **e os assets em `assets/one/`** →
+`zipalign -p 4` → `apksigner` com `tools/tv-app-signing.p12` (alias `morphe`, senha
+`Morphe`) → verifica assinatura, `launchable-activity`, presença de
+`assets/one/fonts/inter_bold.ttf` + `assets/one/OFL.txt` e audita o dex com `dexdump`.
 
-O CI (`.github/workflows/build.yml`) faz o mesmo em bash depois de montar/assinar os engines:
-compila a UI com `javac`+`d8` dos build-tools, injeta nos `AppleMusic-engine-*.apk`, reassina com
-o p12 dos secrets e publica `AppleMusic-one-arm32.apk`/`AppleMusic-one-arm64.apk` com
-`one-arm32`/`one-arm64` no `updates.json` (`versionCode` = versão da UI).
+`pack_single_apk.py` copia `single-apk/single-ui/assets` para `assets/one/` e falha se
+algum caminho já existir no engine; `--assets` é opcional e o default encontra o diretório
+no checkout, então o caminho bash do CI continua funcionando (e passa a levar a Inter).
 
 Auditoria do dex (falha o build se sobrar classe de fora):
 
 ```
 dexdump -l plain single-apk/out-one/dex/classes.dex | findstr "Class descriptor"
-# 60 classes, todas Lcom/anderson/applemusic/one/...
+# 139 classes, todas Lcom/anderson/applemusic/one/...
 ```
 
 ## Instalar / abrir
@@ -92,25 +130,26 @@ adb -s emulator-5554 install -r single-apk/out-one/AppleMusic-one-x86.apk    # T
 adb -s <serial> shell am start -n com.apple.android.music/com.anderson.applemusic.one.OneActivity
 ```
 
-O engine continua logado; o botão **Conta** abre o login do Apple ID (ver **Login**).
+O engine continua logado; o botão **Conta** abre o painel de conta (ver **Login**).
 
 ## Login (conta Apple)
 
 O engine **não tem activity de autenticação**. O login é o diálogo Compose
 `AuthenticationDialogAms` (`com.apple.mediaservices.amsfacade`), criado pelo
-`DialogConnectorViewModel` da activity. O botão **Conta** faz:
+`DialogConnectorViewModel` da activity. O fluxo continua igual:
 
-1. inicia `com.apple.android.music.common.MainActivity` (a activity do engine que hospeda
-   o `StoreApiDialogs` — ela herda de `StoreBaseActivity`);
+1. **Conta** abre o painel de conta (mesmo padrão visual do resto); “Entrar na conta
+   Apple” inicia `com.apple.android.music.common.MainActivity` (a activity do engine que
+   hospeda o `StoreApiDialogs` — ela herda de `StoreBaseActivity`);
 2. por reflexão chama `S()` na activity: instala a `ComposeView` de `StoreApiDialogs` em
    tela cheia, cobrindo a home do engine;
 3. chama `U().showAMSAuthWithType(AuthenticateRequest.Type.Interactive)`: o diálogo AMS
    aparece e é ele que dispara o login (`AuthenticationDialogAms` →
    `AmsAuthViewModel.startSignIn`).
 
-Resultado: **Conta** abre direto a tela *"Continue com o e-mail ou número de telefone"* do
-Apple ID. Se a reflexão falhar (classe ou método ausentes em outro build), o botão cai no
-comportamento antigo: abre a `MainActivity` do engine.
+Resultado: **Entrar** abre direto a tela *"Continue com o e-mail ou número de telefone"*
+do Apple ID. Se a reflexão falhar (classe ou método ausentes em outro build), o botão cai
+no comportamento antigo: abre a `MainActivity` do engine.
 
 ### Deep link / extra: não existe para o login de conta
 
@@ -139,11 +178,11 @@ numa `Activity` pura sem AndroidX/Compose no nosso dex.
 O sheet AMS é um overlay Compose dentro da `MainActivity` do engine. Fechar pelo **X**
 (`userClosedPageView` → `onDismiss` → `DialogConnectorViewModel.hideAMSAuthWithType`) ou
 concluir o login (o `AmsAuthViewModel` emite o resultado e o mesmo `onDismiss` roda) só
-esconde o sheet; a home do engine continuaria na frente. A UI agora observa
+esconde o sheet; a home do engine continuaria na frente. A UI observa
 `getShouldShowAMSAuthWithType()` do `DialogConnectorViewModel` (por reflexão, a cada 250 ms)
 e, quando ele volta a `null`, chama `finish()` na `MainActivity`. Assim **X**, **BACK** e
 login concluído caem de volta nesta UI; o engine (processo, serviço e conta) continua vivo
-como backend.
+como backend. O painel de conta é fechado ao voltar do engine.
 
 ### Volta do engine: catálogo recarregado
 
@@ -153,67 +192,93 @@ após o login) e reassina `__AUTO_ROOT__`. O `MediaClient.disconnect()` descarta
 callbacks, então nada velho é reentregue; se o catálogo vier vazio/erro (serviço ainda
 subindo), a UI reconecta até 4× antes de desistir.
 
-## O que está funcional (P0)
+### Voltar (BACK) no Android 15/16
 
-- **Browse**: `__AUTO_ROOT__` → abas Início/Rádio/Biblioteca; prateleiras com título e
-  linha horizontal de cards com capa; Biblioteca lista as categorias; drill-down de um
-  nível com "‹ Voltar".
-- **Play**: toque/ENTER no card → `playFromMediaId`; play/pause, prev/next na barra e no
-  player cheio; `SeekBar` com seek.
-- **Mini player** sempre visível com sessão (capa/título/artista/play-pause) → player
-  cheio com capa grande, tempos, controles, **Ações** (`getCustomActions()` →
-  `sendCustomAction`) e **Criar Estação** quando a ação é anunciada. No D-pad, o botão
-  **Tocando** (aparece na barra de topo quando há sessão) abre o player cheio.
-- **Ações por item** (long-press no card): toca o item, espera `PLAYING` + a ação aparecer
-  e só então envia (`CREATE_STATION` verificado).
-- **Busca**: `EditText` → `amp-api` com o developer token decifrado do engine (AES/GCM,
-  alias `music_token_store_key`), resultados com capa; tocar toca pelo **id cru**.
-  Fallback: botão "Abrir a busca do Apple Music" (deep link para `common.MainActivity`).
-- **Conta** abre o login do Apple ID direto (ver **Login**), não a home do engine; fechar
-  pelo **X**, dar **BACK** ou concluir o login volta para esta UI com o catálogo recarregado.
-- **Atualizações**: mostra `Version.NAME (CODE)` e o engine instalado; checa o `updates.json`
-  do último release (automático ao abrir, no máximo 1x/24 h; o botão força), compara
-  `one-<abi>.versionCode`, baixa o APK da ABI com progresso, confere o SHA-256 e instala pela
-  `PackageInstaller` (diálogo do sistema). Estados: sem atualização, disponível, baixando (%),
-  verificando, instalando, erro — com **Cancelar** no download.
-- **Foco D-pad**: tudo `focusable`, anel de foco, DOWN da aba entra no conteúdo, ENTER
-  aciona; toque funciona igual (celular/carro).
+Com targetSdk 36 o *predictive back* vem ligado: o sistema deixa de chamar
+`Activity.onBackPressed()`. `OneActivity` registra o mesmo fechamento em
+`OnBackInvokedDispatcher` (API 33+) — ações, atualizações, conta, busca, player cheio,
+“Ver tudo” e o drill-down — e mantém `onBackPressed()` para API 29–32.
+
+## O que está funcional
+
+- **Início**: hero da primeira prateleira (capa, “EM DESTAQUE”, título display, Tocar),
+  prateleiras horizontais com cards de capa e “Ver tudo” como card com chevron;
+  carregamento com skeleton; “Tocar agora” quando o nó é uma lista de reproduzíveis.
+- **Biblioteca / Rádio**: telas próprias (`LibraryScreen` em lista com chevron,
+  `RadioScreen` em grade de estações), com breadcrumb, botão **‹** e drill-down; “Ver tudo”
+  de uma prateleira abre o `CollectionScreen` em overlay com o mesmo tratamento.
+- **Now Playing fullscreen**: fundo em gradiente escuro derivado da **cor dominante da
+  capa** (`ColorArt`), capa grande 16 dp, título/artista/álbum, progresso com tempos,
+  prev 60 / play 80 / next 60 (play em accent), **Criar Estação** e **Ações**. Layout lado
+  a lado em TV/carro e empilhado no celular. Seek arrasta e envia `seekTo`.
+- **Ações**: sheet centrado com as `customActions`, linhas de 56 dp, bullet accent para
+  “Criar Estação”, feedback (“Favorito aplicado”, “Criando estação…”) e Fechar.
+- **Mini player**: persistente em todas as telas, capa 40 dp, play/pause; toque fora do
+  botão abre o player. No D-pad, DOWN de um card foca a barra e ENTER abre o player.
+- **Busca**: campo arredondado, resultados agrupados por tipo (Músicas/Álbuns/Artistas/
+  Playlists) com capa, skeleton durante a consulta, estado vazio e estado sem conexão com
+  “Tentar de novo” + fallback “Abrir a busca do Apple Music”. TV usa o IME do sistema.
+- **Conta**: painel com o botão oficial de login do Apple ID (fluxo acima) e aviso de que
+  a tela recarrega ao voltar.
+- **Atualizações**: painel com versão instalada (`1.9.0 (10900)`), versão do engine,
+  mensagem de estado, progresso, Verificar / Baixar e instalar / Cancelar / Fechar.
+  Compara `one-<abi>.versionCode`, baixa, confere SHA-256 e instala via `PackageInstaller`.
+- **Estados**: vazio, erro e sem conexão com ícone e texto (`EmptyState`) em Início,
+  Biblioteca, Rádio, Busca e Atualizações.
+- **Foco D-pad**: abas com contorno/pill, cards com 1.05 + contorno accent, player com
+  cadeia explícita de foco, sheets com foco nas linhas; DOWN do chrome entra no conteúdo.
 
 ## Validado
 
 | Device | Resultado |
 |---|---|
-| `RXCX100BZ5J` (arm64, API 36, toque) | instala por cima do engine logado; browse, play, mini player, player cheio, seek, Ações (Favorito enviado), Criar Estação por item, busca (HTTP 200, 18 resultados, "Get Lucky" tocando), Conta (abre `common.MainActivity` e volta), Atualizações. Evidências `evidence/one-phone-0*.png` e `one-phone-1*.png`. |
-| `emulator-5554` (TV x86, API 34, D-pad) | browse (Home/Radio/Library e prateleiras), D-pad (direita/baixo/ENTER) tocando, mini player, player cheio (botão Tocando), busca (HTTP 200, 18 resultados, id cru `617154366` tocando). Playback tocou de verdade no x86 (`state=PLAYING`), não ficou em BUFFERING. Evidências `evidence/one-tv-0*.png`. |
-| Carro `100.74.124.38:5555` | não estava online; build arm32 gerado e não instalado. |
-| `RXCX100BZ5J` + `emulator-5554` (1.8.0/10800) | instalado por cima (versionCode 1614 igual, cert igual): segue logado e tocando (`state=PLAYING`). Botão **Atualizações** mostra `Instalada: 1.8.0 (10800)` e "Sem atualização" lendo o `updates.json` real da `apps-1.7.0`, que ainda não tem `one-*` (ausência tratada sem crashar). Evidências `.pipeline/one-update-phone-0*.png` e `.pipeline/one-update-tv-0*.png`. Download/instalação de um release com `one-*` ainda não exercitados (1.8.0 não publicado). |
-| `RXCX100BZ5J` + `emulator-5554` (1.8.2/10802) | **Conta** abre o login do Apple ID direto — "Continue com o e-mail ou número de telefone", WebView AMS carregada, sem a home do engine; X + BACK volta para esta UI com o catálogo carregado; busca HTTP 200 (`daft`, 18 resultados) no emulador depois de voltar; `logcat -b crash` vazio nos dois. Evidências `evidence/one-login-tv-0*.png` e `evidence/one-login-phone-0*.png`. Login completo (senha/2FA) não exercitado: a senha não está no repo e as duas contas já estavam logadas. |
-| `RXCX100BZ5J` + `emulator-5554` (1.8.3/10803) | **Conta** → login direto; **X** sozinho e **BACK** fecham a `MainActivity` e caem na UI com o catálogo recarregado (log `Apple ID sheet dismissed, finishing the engine host` + `back from the engine, rebuilding the browse session`); busca HTTP 200 nos dois (`daft`, 18 resultados); `logcat -b crash` vazio. Evidências `evidence/one-login-close-{tv,phone}-{before,sheet,after-x,after-back,search}.png`. Deep links testados: `apple-music://accountSummary` (home), `https://itunes.apple.com/accountSummary` (Account) e `musicsdk://applemusic/authenticate-v3` (abre o Apple ID, mas é o fluxo SDK; ver **Login**) — evidência `one-login-close-deeplink-sdk.png`. Login completo (senha/2FA) não exercitado; o sucesso usa o mesmo `onDismiss` do X (verificado no decompilado). |
+| `RXCX100BZ5J` (arm64, API 36, toque) | Instala por cima do engine logado. Home com hero/prateleiras/“Ver tudo”; toque em card toca (mini player aparece); mini → player cheio com gradiente da capa, tempos e controles; seek atualiza a posição (0:03 → 3:08); Ações abre o sheet e envia **Favorito** (`sendCustomAction ...FAVORITE`); Rádio em grade e Biblioteca em lista com drill-down; busca `daft` HTTP 200 (18 resultados) e resultado tocável; painel de Conta renderiza (login oficial não re-exercitado nesta rodada); BACK fecha ações/player/busca e mantém a activity (predictive back); `logcat -b crash` vazio. |
+| `emulator-5554` (TV x86, 1080p, D-pad) | Instala por cima. Barra de apps em uma linha com Buscar/Conta/Atualizações rotulados; DOWN da aba foca a hero (contorno accent), DOWN foca o card (1.05 + contorno), ENTER toca; mini player com foco próprio (DOWN de card → mini); ENTER abre o player cheio lado a lado; Ações abre o sheet e envia **Criar Estação**; BACK fecha sheet e depois o player sem sair; Rádio em grade e Biblioteca em lista (ícone substituto quando o nó não tem capa); busca `daft` HTTP 200 (18 resultados) digitada pelo IME/`input text`; Atualizações mostra `1.9.0 (10900)` + engine `7.0.0 (1614)` e “Sem atualização”; `logcat -b crash` vazio. |
+| `arm32` | APK gerado e assinado; não havia device arm32/carro online nesta rodada. |
+
+Evidências lado a lado com as referências dos companions
+(`.pipeline/revamp-tv/`, `.pipeline/revamp-car/` e as fotos de celular em
+`.pipeline/car-app/`), em [`evidence/`](evidence):
+
+| Tela | Single APK | Referência | Comparação |
+|---|---|---|---|
+| Início (TV) | `revamp-one-tv-home.png` | `revamp-tv/01-inicio.png` | `revamp-one-tv-home-vs-revamp-tv.png` |
+| Biblioteca (TV) | `revamp-one-tv-library.png` | `revamp-tv/02-biblioteca.png` | `revamp-one-tv-library-vs-revamp-tv.png` |
+| Rádio (TV) | `revamp-one-tv-radio.png` | `revamp-car/03-radio.png` | `revamp-one-tv-radio-vs-revamp-car.png` |
+| Fullscreen (TV) | `revamp-one-tv-fullscreen.png` | `revamp-tv/04-fullscreen.png` | `revamp-one-tv-fullscreen-vs-revamp-tv.png` |
+| Ações (TV) | `revamp-one-tv-actions.png` | `revamp-tv/05-acoes.png` | `revamp-one-tv-actions-vs-revamp-tv.png` |
+| Busca (TV) | `revamp-one-tv-search.png` | `revamp-tv/03-chip-focado.png` (catálogo) | `revamp-one-tv-search-vs-revamp-tv.png` |
+| Início (celular) | `revamp-one-phone-home.png` | `car-app/revamp-phone-home.png` | `revamp-one-phone-home-vs-car-app.png` |
+| Biblioteca (celular) | `revamp-one-phone-library.png` | `car-app/revamp-phone-library.png` | `revamp-one-phone-library-vs-car-app.png` |
+| Rádio (celular) | `revamp-one-phone-radio.png` | `car-app/revamp-phone-radio.png` | `revamp-one-phone-radio-vs-car-app.png` |
+| Fullscreen (celular) | `revamp-one-phone-fullscreen.png` | `car-app/revamp-phone-player.png` | `revamp-one-phone-fullscreen-vs-car-app.png` |
+| Ações (celular) | `revamp-one-phone-actions.png` | `car-app/revamp-phone-home.png` | `revamp-one-phone-actions-vs-car-app.png` |
+| Busca (celular) | `revamp-one-phone-search.png` | `car-app/revamp-phone-library.png` | `revamp-one-phone-search-vs-car-app.png` |
+
+Extras da mesma rodada: `revamp-one-tv-home-focus.png` e
+`revamp-one-tv-card-focus.png` (foco D-pad), `revamp-one-tv-home-playing.png`,
+`revamp-one-tv-action-station.png` (feedback de Criar Estação),
+`revamp-one-phone-home-playing.png` (mini player), `revamp-one-phone-seek.png`
+(seek) e `revamp-one-phone-account.png` (painel de conta).
 
 ## Limitações / P1
 
-- **Biblioteca/Rádio** aparecem pelas abas do engine, mas sem telas próprias (paridade
-  com `car-app`: Recentes, Playlists, Artistas, Álbuns; estações).
-- **Mini player** é por activity (não é overlay persistente entre telas).
-- **Updater**: o caminho de download + SHA-256 + `PackageInstaller` não foi exercitado ponta a
-  ponta porque ainda não existe release com `one-*`; o caminho "sem atualização" (parsing do
-  `updates.json` real) foi validado nos dois devices.
-- **`one-x86`** não é publicado pelo CI (só arm32/arm64); o build local gera para o emulador.
-- **Polimento visual** Apple (capas arredondadas, gradiente no player, tipografia) e
-  estados de erro (engine ausente/não logado, busca offline) ficam para o P1.
-- **Performance**: a Home monta todas as prateleiras de uma vez (~22 × 12 cards ≈ 260
-  capas) e baixa todas as capas; falta carregar sob demanda (o emulador x86 aguentou, o
-  box arm32 de 2 GB não foi medido).
-- No emulador TV, a primeira assinatura de `__AUTO_ROOT__/home` veio vazia (0 filhos);
-  ao trocar de aba e voltar (ou na segunda abertura) veio completa (~22 prateleiras) —
-  possível corrida do engine, não da UI.
-- Foco inicial no D-pad pode cair na barra de topo antes de o conteúdo chegar; as abas
-  têm `OnKeyListener` para DOWN entrar no conteúdo.
-- **Login**: o diálogo AMS é hospedado pela `MainActivity` do engine (única com o
-  `StoreApiDialogs`); a UI o fecha (X/BACK/sucesso) ao ver
-  `shouldShowAMSAuthWithType` voltar a `null`. O fluxo de senha/2FA do Apple ID não é
-  exercitado automaticamente (a senha não está no repo); o caminho de sucesso foi
-  verificado no decompilado (`AmsAuthViewModel` → `onDismiss` → mesmo
-  `hideAMSAuthWithType` do X).
+- **Sem blur real**: o fundo do player é um gradiente escuro da cor dominante da capa
+  (API 29 viável, sem `RenderEffect`/RenderScript nem blur em software). O visual é
+  próximo do car-app, não idêntico ao desfoque do iOS.
+- **Home carrega todas as prateleiras de uma vez** (~22 × 12 cards) e baixa todas as
+  capas; não há carregamento sob demanda por prateleira.
+- **Updater**: o caminho de download + SHA-256 + `PackageInstaller` continua não
+  exercitado ponta a ponta (não há release com `one-*`); o caminho “sem atualização”
+  (parsing do `updates.json` real) foi validado nos dois devices, agora mostrando
+  `1.9.0 (10900)`.
+- **`one-x86`** não é publicado pelo CI (só arm32/arm64); o build local gera para o
+  emulador.
+- **Login**: o diálogo AMS é hospedado pela `MainActivity` do engine; a UI o fecha
+  (X/BACK/sucesso) ao ver `shouldShowAMSAuthWithType` voltar a `null`. O fluxo de
+  senha/2FA do Apple ID não é exercitado automaticamente (a senha não está no repo).
+- **Foco inicial no emulador TV**: o emulador se anuncia como touchscreen; a UI detecta
+  `leanback`/`uiMode` television e usa o caminho D-pad. Em devices sem essa flag o foco
+  pode cair no modo toque.
 - **Assinatura**: os APKs saem com o cert Morphe; sem ele o `install -r` falha e a conta
   seria perdida ao desinstalar.

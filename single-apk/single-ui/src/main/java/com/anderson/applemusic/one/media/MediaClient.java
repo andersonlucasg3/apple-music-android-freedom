@@ -1,4 +1,4 @@
-package com.anderson.applemusic.one;
+package com.anderson.applemusic.one.media;
 
 import android.content.ComponentName;
 import android.content.Context;
@@ -30,33 +30,33 @@ import java.util.Map;
  * under {@code __AUTO_ROOT__}; {@code getRoot()} only holds {@code ROOT_MEDIA_ITEM}.
  */
 @SuppressWarnings("deprecation")
-final class MediaClient {
+public final class MediaClient {
 
-    static final String PACKAGE = "com.apple.android.music";
-    static final String AUTO_ROOT = "__AUTO_ROOT__";
-    static final String ACCOUNT_ACTIVITY = PACKAGE + ".common.MainActivity";
+    public static final String PACKAGE = "com.apple.android.music";
+    public static final String AUTO_ROOT = "__AUTO_ROOT__";
+    public static final String ACCOUNT_ACTIVITY = PACKAGE + ".common.MainActivity";
 
     /**
      * The service the engine actually exposes ({@code .player.}), verified by the probe
      * logcat and by {@code core/MediaBrowserClient.kt} — not the literal
      * {@code .MediaPlaybackService} shorthand.
      */
-    static final ComponentName SERVICE =
+    public static final ComponentName SERVICE =
             new ComponentName(PACKAGE, PACKAGE + ".player.MediaPlaybackService");
 
     private static final String TAG = "AppleMusicOne";
 
     /** One entry of the browse tree. */
-    static final class Item {
-        final String id;
-        final String title;
-        final String subtitle;
-        final String artworkUri;
-        final boolean browsable;
-        final boolean playable;
+    public static final class Item {
+        public final String id;
+        public final String title;
+        public final String subtitle;
+        public final String artworkUri;
+        public final boolean browsable;
+        public final boolean playable;
 
-        Item(String id, String title, String subtitle, String artworkUri,
-             boolean browsable, boolean playable) {
+        public Item(String id, String title, String subtitle, String artworkUri,
+                boolean browsable, boolean playable) {
             this.id = id == null ? "" : id;
             this.title = title == null ? "" : title;
             this.subtitle = subtitle == null ? "" : subtitle;
@@ -67,36 +67,36 @@ final class MediaClient {
     }
 
     /** One session custom action ({@code PlaybackState.getCustomActions()}). */
-    static final class Action {
-        final String action;
-        final String title;
+    public static final class Action {
+        public final String action;
+        public final String title;
 
-        Action(String action, String title) {
+        public Action(String action, String title) {
             this.action = action == null ? "" : action;
             this.title = title == null ? "" : title;
         }
     }
 
     /** Immutable-ish view of what the session currently exposes. */
-    static final class Snapshot {
-        boolean hasSession;
-        boolean playing;
-        long positionMs;
-        long durationMs;
-        String title = "";
-        String artist = "";
-        String album = "";
-        Bitmap artwork;
-        List<Action> actions = Collections.emptyList();
+    public static final class Snapshot {
+        public boolean hasSession;
+        public boolean playing;
+        public long positionMs;
+        public long durationMs;
+        public String title = "";
+        public String artist = "";
+        public String album = "";
+        public Bitmap artwork;
+        public List<Action> actions = Collections.emptyList();
 
-        Action findActionEndingWith(String suffix) {
+        public Action findActionEndingWith(String suffix) {
             for (Action action : actions) {
                 if (action.action.endsWith(suffix)) return action;
             }
             return null;
         }
 
-        boolean hasAction(String actionId) {
+        public boolean hasAction(String actionId) {
             for (Action action : actions) {
                 if (action.action.equals(actionId)) return true;
             }
@@ -104,7 +104,7 @@ final class MediaClient {
         }
     }
 
-    interface Listener {
+    public interface Listener {
         void onConnected();
 
         void onDisconnected(String message);
@@ -130,17 +130,17 @@ final class MediaClient {
     private PlaybackState lastState;
     private MediaMetadata lastMetadata;
 
-    MediaClient(Context context) {
+    public MediaClient(Context context) {
         this.context = context.getApplicationContext();
     }
 
-    void setListener(Listener listener) {
+    public void setListener(Listener listener) {
         this.listener = listener;
     }
 
     // --- connection --------------------------------------------------------------
 
-    void connect() {
+    public void connect() {
         if (browser != null) return;
         try {
             MediaBrowser created = new MediaBrowser(context, SERVICE, connectionCallback, null);
@@ -152,7 +152,7 @@ final class MediaClient {
         }
     }
 
-    void disconnect() {
+    public void disconnect() {
         if (controllerCallback != null && controller != null) {
             try {
                 controller.unregisterCallback(controllerCallback);
@@ -253,7 +253,7 @@ final class MediaClient {
      * Safe to call from a background thread: MediaBrowser posts the binder call to its
      * own handler and the callback reaches the main looper.
      */
-    synchronized void subscribe(final String parentId) {
+    public synchronized void subscribe(final String parentId) {
         final List<Item> cached = cache.get(parentId);
         if (cached != null) {
             notifyChildren(parentId, cached);
@@ -349,7 +349,7 @@ final class MediaClient {
 
     // --- transport ---------------------------------------------------------------
 
-    void play(String mediaId) {
+    public void play(String mediaId) {
         MediaController current = controller;
         if (current == null) {
             Log.e(TAG, "playFromMediaId without a controller: " + mediaId);
@@ -363,7 +363,7 @@ final class MediaClient {
         }
     }
 
-    void togglePlayPause() {
+    public void togglePlayPause() {
         MediaController current = controller;
         if (current == null) return;
         PlaybackState state = current.getPlaybackState();
@@ -374,22 +374,22 @@ final class MediaClient {
         }
     }
 
-    void skipNext() {
+    public void skipNext() {
         MediaController current = controller;
         if (current != null) current.getTransportControls().skipToNext();
     }
 
-    void skipPrevious() {
+    public void skipPrevious() {
         MediaController current = controller;
         if (current != null) current.getTransportControls().skipToPrevious();
     }
 
-    void seekTo(long positionMs) {
+    public void seekTo(long positionMs) {
         MediaController current = controller;
         if (current != null) current.getTransportControls().seekTo(positionMs);
     }
 
-    void sendCustomAction(String actionId) {
+    public void sendCustomAction(String actionId) {
         MediaController current = controller;
         if (current == null) {
             Log.e(TAG, "sendCustomAction without a controller: " + actionId);
@@ -404,7 +404,7 @@ final class MediaClient {
     }
 
     /** Re-reads the session position only; metadata is read from the callbacks. */
-    void refreshPlayback() {
+    public void refreshPlayback() {
         MediaController current = controller;
         if (current == null) return;
         PlaybackState state = current.getPlaybackState();

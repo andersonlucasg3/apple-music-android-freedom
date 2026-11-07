@@ -38,7 +38,7 @@ import java.util.concurrent.Executors;
  * <p>No AndroidX/Kotlin: only {@code HttpURLConnection}, {@code org.json},
  * {@code MessageDigest} and {@code PackageInstaller}.
  */
-final class UpdateManager {
+public final class UpdateManager {
 
     private static final String TAG = "AppleMusicOne";
 
@@ -54,23 +54,23 @@ final class UpdateManager {
     private static final int INSTALL_REQUEST = 0x0E01;
 
     // States shown by the "Atualizações" dialog.
-    static final int IDLE = 0;
-    static final int CHECKING = 1;
-    static final int NONE = 2;
-    static final int AVAILABLE = 3;
-    static final int DOWNLOADING = 4;
-    static final int VERIFYING = 5;
-    static final int INSTALLING = 6;
-    static final int ERROR = 7;
-    static final int INSTALLED = 8;
+    public static final int IDLE = 0;
+    public static final int CHECKING = 1;
+    public static final int NONE = 2;
+    public static final int AVAILABLE = 3;
+    public static final int DOWNLOADING = 4;
+    public static final int VERIFYING = 5;
+    public static final int INSTALLING = 6;
+    public static final int ERROR = 7;
+    public static final int INSTALLED = 8;
 
-    static final class State {
-        final int phase;
-        final String message;
-        final int progress;
-        final Update update;
+    public static final class State {
+        public final int phase;
+        public final String message;
+        public final int progress;
+        public final Update update;
 
-        State(int phase, String message, int progress, Update update) {
+        public State(int phase, String message, int progress, Update update) {
             this.phase = phase;
             this.message = message;
             this.progress = progress;
@@ -78,15 +78,15 @@ final class UpdateManager {
         }
     }
 
-    static final class Update {
-        final String key;
-        final String name;
-        final String version;
-        final int versionCode;
-        final long size;
-        final String sha256;
+    public static final class Update {
+        public final String key;
+        public final String name;
+        public final String version;
+        public final int versionCode;
+        public final long size;
+        public final String sha256;
 
-        Update(String key, String name, String version, int versionCode, long size, String sha256) {
+        public Update(String key, String name, String version, int versionCode, long size, String sha256) {
             this.key = key;
             this.name = name;
             this.version = version;
@@ -96,7 +96,7 @@ final class UpdateManager {
         }
     }
 
-    interface Listener {
+    public interface Listener {
         void onUpdateState(State state);
     }
 
@@ -112,21 +112,21 @@ final class UpdateManager {
     private volatile PackageInstaller.Session session;
     private volatile State current = new State(IDLE, "", -1, null);
 
-    UpdateManager(Context context) {
+    public UpdateManager(Context context) {
         this.context = context.getApplicationContext();
         this.prefs = this.context.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
     }
 
-    void setListener(Listener listener) {
+    public void setListener(Listener listener) {
         this.listener = listener;
     }
 
-    State currentState() {
+    public State currentState() {
         return current;
     }
 
     /** Periodic check started with the app: at most once per 24 h. */
-    void autoCheck() {
+    public void autoCheck() {
         long last = prefs.getLong(KEY_LAST_CHECK, 0L);
         if (System.currentTimeMillis() - last < CHECK_INTERVAL_MS) {
             Log.i(TAG, "update auto-check throttled");
@@ -136,7 +136,7 @@ final class UpdateManager {
     }
 
     /** Always checks (the "Atualizações" button uses this). */
-    void check() {
+    public void check() {
         synchronized (this) {
             if (busy) return;
             busy = true;
@@ -153,7 +153,7 @@ final class UpdateManager {
         });
     }
 
-    void download(final Update update) {
+    public void download(final Update update) {
         if (update == null) return;
         synchronized (this) {
             if (busy) return;
@@ -174,7 +174,7 @@ final class UpdateManager {
         });
     }
 
-    void cancel() {
+    public void cancel() {
         cancelled = true;
         HttpURLConnection open = connection;
         if (open != null) {
@@ -196,7 +196,7 @@ final class UpdateManager {
     }
 
     /** Result of the installer status intent, delivered by {@link OneActivity}. */
-    void onInstallResult(boolean success, String message) {
+    public void onInstallResult(boolean success, String message) {
         if (success) {
             postState(new State(INSTALLED, message, -1, null));
         } else {
@@ -204,7 +204,7 @@ final class UpdateManager {
         }
     }
 
-    void shutdown() {
+    public void shutdown() {
         cancel();
         worker.shutdownNow();
     }

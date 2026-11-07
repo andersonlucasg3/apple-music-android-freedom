@@ -1,4 +1,4 @@
-package com.anderson.applemusic.one;
+package com.anderson.applemusic.one.media;
 
 import android.app.Activity;
 import android.content.Intent;
@@ -38,16 +38,16 @@ import javax.crypto.spec.GCMParameterSpec;
  * {@code music_token_store_key} key of the AndroidKeyStore. This code runs inside the
  * engine APK, so both the file and the key belong to the current UID.
  */
-final class CatalogSearch {
+public final class CatalogSearch {
 
-    static final class Result {
-        final String id;
-        final String kind;
-        final String title;
-        final String artist;
-        final String artworkUrl;
+    public static final class Result {
+        public final String id;
+        public final String kind;
+        public final String title;
+        public final String artist;
+        public final String artworkUrl;
 
-        Result(String id, String kind, String title, String artist, String artworkUrl) {
+        public Result(String id, String kind, String title, String artist, String artworkUrl) {
             this.id = id;
             this.kind = kind;
             this.title = title;
@@ -56,7 +56,7 @@ final class CatalogSearch {
         }
     }
 
-    interface Callback {
+    public interface Callback {
         void onResults(List<Result> results);
 
         void onFailure(String message, boolean tokenMissing);
@@ -88,11 +88,11 @@ final class CatalogSearch {
             java.util.concurrent.Executors.newSingleThreadExecutor();
     private volatile String cachedToken;
 
-    CatalogSearch(Activity activity) {
+    public CatalogSearch(Activity activity) {
         this.activity = activity;
     }
 
-    void search(final String query, final Callback callback) {
+    public void search(final String query, final Callback callback) {
         final String term = query == null ? "" : query.trim();
         if (term.length() == 0) {
             callback.onResults(Collections.<Result>emptyList());
@@ -153,7 +153,7 @@ final class CatalogSearch {
         });
     }
 
-    void shutdown() {
+    public void shutdown() {
         executor.shutdownNow();
     }
 
@@ -378,7 +378,7 @@ final class CatalogSearch {
     }
 
     /** Fallback when the token cannot be read: opens the engine's own search screen. */
-    static void openEngineSearch(Activity activity) {
+    public static void openEngineSearch(Activity activity) {
         try {
             Intent intent = new Intent(Intent.ACTION_VIEW, Uri.parse(ENGINE_SEARCH_URL));
             intent.setClassName(MediaClient.PACKAGE, MediaClient.ACCOUNT_ACTIVITY);

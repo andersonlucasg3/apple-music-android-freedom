@@ -1,4 +1,4 @@
-package com.anderson.applemusic.one;
+package com.anderson.applemusic.one.media;
 
 import android.content.ContentResolver;
 import android.content.Context;
@@ -25,12 +25,12 @@ import java.util.concurrent.Executors;
  * a {@link ContentResolver} for the engine's {@code content://} icons and
  * {@link LruCache} for memory. All decoding happens off the main thread.
  */
-final class ArtworkLoader {
+public final class ArtworkLoader {
 
     private static final String TAG = "AppleMusicOne";
     private static final int CACHE_BYTES = 24 * 1024 * 1024;
 
-    interface Callback {
+    public interface Callback {
         void onArtwork(String uri, Bitmap bitmap);
     }
 
@@ -44,7 +44,7 @@ final class ArtworkLoader {
         }
     };
 
-    ArtworkLoader(Context context) {
+    public ArtworkLoader(Context context) {
         this.context = context.getApplicationContext();
     }
 
@@ -52,7 +52,7 @@ final class ArtworkLoader {
      * Loads {@code uri} into {@code target}; a recycled/reused target is protected by the
      * view tag, so a late decode never paints the wrong card.
      */
-    void load(final String uri, final ImageView target) {
+    public void load(final String uri, final ImageView target) {
         if (uri == null || uri.length() == 0) {
             target.setImageDrawable(null);
             target.setTag(null);
@@ -138,7 +138,7 @@ final class ArtworkLoader {
         return output.toByteArray();
     }
 
-    void shutdown() {
+    public void shutdown() {
         executor.shutdownNow();
         cache.evictAll();
     }

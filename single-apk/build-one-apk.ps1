@@ -32,7 +32,7 @@ param(
     [string]$OutDir = "single-apk/out-one",
     # Version of the injected UI (not the engine's 7.0.0). It becomes Version.NAME/CODE,
     # the value updates.json carries as one-<abi>.versionCode.
-    [string]$PoneVersion = "1.8.0",
+    [string]$PoneVersion = "1.9.0",
     [int]$PoneVersionCode = 0,
     [string]$Activity = "com.anderson.applemusic.one.OneActivity",
     # @android:style/Theme.Material.NoActionBar (0x0103022e; same id on API 29..36).
@@ -197,9 +197,10 @@ foreach ($abiName in $Abi) {
         "--permission", "android.permission.REQUEST_INSTALL_PACKAGES")
 
     $packed = Join-Path $abiDir "one-unsigned.apk"
-    Write-Host "pack     : engine + single-ui dex + patched manifest"
+    Write-Host "pack     : engine + single-ui dex + assets/one + patched manifest"
     Invoke-Tool "python" @((Join-Path $tools "pack_single_apk.py"), "--engine", $enginePath,
-        "--dex", $uiDex, "--manifest", $patchedBin, "--out", $packed)
+        "--dex", $uiDex, "--manifest", $patchedBin, "--assets",
+        (Join-Path $PSScriptRoot "single-ui/assets"), "--out", $packed)
 
     $aligned = Join-Path $abiDir "one-aligned.apk"
     $signed = Join-Path $outDir $names[$abiName]
@@ -217,6 +218,18 @@ foreach ($abiName in $Abi) {
     if (-not ($badging | Select-String -Pattern "launchable-activity: name='$Activity'")) {
         throw "injected activity is not the launcher in $signed"
     }
+    # The Inter TTFs must be inside the APK as assets/one/fonts/*.ttf, otherwise
+    # Typeface.createFromAsset silently falls back to sans-serif.
+    $zip = [IO.Compression.ZipFile]::OpenRead($signed)
+    try {
+        $font = $zip.GetEntry("assets/one/fonts/inter_bold.ttf")
+        $license = $zip.GetEntry("assets/one/OFL.txt")
+        $assets = @($zip.Entries | Where-Object { $_.FullName.StartsWith("assets/one/") })
+    } finally {
+        $zip.Dispose()
+    }
+    if (-not $font -or -not $license) { throw "assets/one missing from $signed" }
+    Write-Host ("assets   : {0} entries, Inter OK" -f $assets.Count)
     Write-Host ("APK      : {0} ({1} MB)" -f $signed,
         [math]::Round((Get-Item $signed).Length / 1MB, 1))
 }
