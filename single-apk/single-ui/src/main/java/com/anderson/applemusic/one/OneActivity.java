@@ -60,6 +60,11 @@ public final class OneActivity extends Activity
             "com.apple.mediaservices.amskit.authentication.AuthenticateRequest$Type";
     /** Time for the host activity to build its window/ComposeView before we drive it. */
     private static final long SIGN_IN_SETTLE_MS = 400L;
+    /** How often the sign-in sheet state is checked while the engine host is on top. */
+    private static final long AUTH_POLL_MS = 250L;
+    /** Time to wait before reconnecting the MediaBrowser to the restarted engine service. */
+    private static final long RECONNECT_DELAY_MS = 700L;
+    private static final int MAX_RECONNECT_ATTEMPTS = 4;
 
     private static final int COLOR_BG = 0xFF000000;
     private static final int COLOR_SURFACE = 0xFF1C1C1E;
@@ -81,6 +86,23 @@ public final class OneActivity extends Activity
     private ArtworkLoader artwork;
     private CatalogSearch catalog;
     private UpdateManager updater;
+
+    /** The engine activity ran; rebuild the browse tree when we are back on top. */
+    private boolean refreshOnResume;
+    /** A reconnect to the engine service is wanted (it may still be restarting). */
+    private boolean reconnecting;
+    private boolean refreshingCatalog;
+    private int refreshAttempts;
+    private Runnable authPoll;
+    private final Runnable reconnect = new Runnable() {
+        @Override
+        public void run() {
+            if (!reconnecting) return;
+            Log.i(TAG, "reconnecting to the engine");
+            client.disconnect();
+            client.connect();
+        }
+    };
 
     private AlertDialog updateDialog;
     private TextView updateMessage;
@@ -154,6 +176,45 @@ public final class OneActivity extends Activity
         client.connect();
         handleInstallStatus(getIntent());
         updater.autoCheck();
+    }
+
+    /**
+     * The engine activity (sign-in host or the plain account screen) changes the account
+     * or restarts its playback service; either way the tree, cache and covers are stale
+     * when we come back, so reconnect and rebuild from {@code __AUTO_ROOT__}.
+     */
+    @Override
+    protected void onResume() {
+        super.onResume();
+        if (refreshOnResume) {
+            refreshOnResume = false;
+            refreshFromEngine();
+        }
+    }
+
+    private void refreshFromEngine() {
+        Log.i(TAG, "back from the engine, rebuilding the browse session");
+        resetBrowse();
+        refreshingCatalog = true;
+        reconnecting = true;
+        refreshAttempts = 0;
+        setMessage("Atualizando o Apple Music…");
+        client.disconnect();
+        main.removeCallbacks(reconnect);
+        main.postDelayed(reconnect, RECONNECT_DELAY_MS);
+    }
+
+    /** Drops the previous account's tabs, shelves, drill-down and covers. */
+    private void resetBrowse() {
+        rootReceived = false;
+        lastArtworkHash = 0;
+        tabs.clear();
+        tabBar.removeAllViews();
+        sections.clear();
+        levels.clear();
+        levelContainer = null;
+        selectedTab = -1;
+        content.removeAllViews();
     }
 
     // --- UI scaffolding -----------------------------------------------------------
@@ -605,6 +666,7 @@ public final class OneActivity extends Activity
     @Override
     public void onConnected() {
         Log.i(TAG, "connected");
+        reconnecting = false;
         setMessage("Conectado ao Apple Music");
         loadAsync(MediaClient.AUTO_ROOT);
     }
@@ -612,12 +674,23 @@ public final class OneActivity extends Activity
     @Override
     public void onDisconnected(String message) {
         Log.w(TAG, "disconnected: " + message);
+        if ((reconnecting || refreshingCatalog) && refreshAttempts < MAX_RECONNECT_ATTEMPTS) {
+            refreshAttempts++;
+            reconnecting = true;
+            setMessage("Reconectando ao Apple Music…");
+            main.removeCallbacks(reconnect);
+            main.postDelayed(reconnect, RECONNECT_DELAY_MS);
+            return;
+        }
+        reconnecting = false;
+        refreshingCatalog = false;
         setMessage(message);
     }
 
     @Override
     public void onChildrenFailed(String parentId) {
         Log.w(TAG, "children failed: " + parentId);
+        if (MediaClient.AUTO_ROOT.equals(parentId) && retryCatalog()) return;
         setMessage("Não foi possível carregar " + parentId);
     }
 
@@ -651,10 +724,13 @@ public final class OneActivity extends Activity
             if (item.browsable) found.add(item);
         }
         if (found.isEmpty()) {
+            if (retryCatalog()) return;
             setMessage("Apple Music não expôs o catálogo de mídia");
             return;
         }
         rootReceived = true;
+        refreshingCatalog = false;
+        refreshAttempts = 0;
         tabs.clear();
         tabs.addAll(found);
         buildTabs();
@@ -668,6 +744,20 @@ public final class OneActivity extends Activity
                 }
             });
         }
+    }
+
+    /**
+     * The engine service may still be restarting after sign-in; keep the browse session
+     * reconnecting until the catalogue arrives or the attempts run out.
+     */
+    private boolean retryCatalog() {
+        if (!refreshingCatalog || refreshAttempts >= MAX_RECONNECT_ATTEMPTS) return false;
+        refreshAttempts++;
+        reconnecting = true;
+        setMessage("Aguardando o catálogo do Apple Music…");
+        main.removeCallbacks(reconnect);
+        main.postDelayed(reconnect, RECONNECT_DELAY_MS);
+        return true;
     }
 
     private void focusSelectedTab() {
@@ -1298,9 +1388,11 @@ public final class OneActivity extends Activity
      * engine activity, then by reflection: {@code S()} installs the full-screen
      * StoreApiDialogs ComposeView (so its home is covered) and
      * {@code showAMSAuthWithType(Interactive)} opens the AMS dialog, which performs the
-     * sign-in itself. BACK returns to this activity.
+     * sign-in itself. BACK returns to this activity; when the sheet is closed (X) or the
+     * sign-in finishes, the host activity is finished by {@link #watchAuthClose(Activity)}.
      */
     private void openAccount() {
+        refreshOnResume = true;
         final Application app = getApplication();
         final ActivityWatcher watcher = new ActivityWatcher(MediaClient.ACCOUNT_ACTIVITY) {
             @Override
@@ -1338,6 +1430,7 @@ public final class OneActivity extends Activity
                     // which starts the sign-in itself (AuthenticationDialogAms -> startSignIn).
                     Object vm = host.getClass().getMethod("U").invoke(host);
                     vm.getClass().getMethod("showAMSAuthWithType", authType).invoke(vm, interactive);
+                    watchAuthClose(host);
                 } catch (Throwable t) {
                     Log.e(TAG, "cannot show the Apple ID dialog, falling back to the engine UI", t);
                     openEngine();
@@ -1346,7 +1439,41 @@ public final class OneActivity extends Activity
         }, SIGN_IN_SETTLE_MS);
     }
 
+    /**
+     * The AMS sheet is a Compose overlay in the engine's MainActivity: closing it (X) or
+     * finishing the sign-in only hides the sheet, leaving the engine home on screen. Poll
+     * the activity-scoped {@code DialogConnectorViewModel} until the sheet has been seen
+     * and then disappears, and finish the host so the user lands back on this UI.
+     *
+     * <p>Finishing on a successful sign-in too is deliberate: this UI is the main screen
+     * and reloads the account state in {@link #onResume()}, while the engine process and
+     * its playback service stay alive as the backend.
+     */
+    private void watchAuthClose(final Activity host) {
+        authPoll = new Runnable() {
+            @Override
+            public void run() {
+                if (host.isFinishing() || host.isDestroyed()) return;
+                try {
+                    Object vm = host.getClass().getMethod("U").invoke(host);
+                    Object flow = vm.getClass().getMethod("getShouldShowAMSAuthWithType").invoke(vm);
+                    Object value = flow.getClass().getMethod("getValue").invoke(flow);
+                    if (value != null) {
+                        main.postDelayed(this, AUTH_POLL_MS);
+                        return;
+                    }
+                    Log.i(TAG, "Apple ID sheet dismissed, finishing the engine host");
+                    host.finish();
+                } catch (Throwable t) {
+                    Log.w(TAG, "cannot watch the Apple ID sheet", t);
+                }
+            }
+        };
+        main.postDelayed(authPoll, AUTH_POLL_MS);
+    }
+
     private void openEngine() {
+        refreshOnResume = true;
         try {
             Intent intent = new Intent();
             intent.setClassName(MediaClient.PACKAGE, MediaClient.ACCOUNT_ACTIVITY);
@@ -1588,6 +1715,8 @@ public final class OneActivity extends Activity
     @Override
     protected void onDestroy() {
         main.removeCallbacks(ticker);
+        main.removeCallbacks(reconnect);
+        if (authPoll != null) main.removeCallbacks(authPoll);
         if (client != null) client.disconnect();
         if (artwork != null) artwork.shutdown();
         if (catalog != null) catalog.shutdown();

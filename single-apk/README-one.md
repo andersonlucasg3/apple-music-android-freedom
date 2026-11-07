@@ -109,14 +109,49 @@ O engine **não tem activity de autenticação**. O login é o diálogo Compose
    `AmsAuthViewModel.startSignIn`).
 
 Resultado: **Conta** abre direto a tela *"Continue com o e-mail ou número de telefone"* do
-Apple ID (não a home do engine); BACK volta para esta UI. Se a reflexão falhar (classe ou
-método ausentes em outro build), o botão cai no comportamento antigo: abre a
-`MainActivity` do engine.
+Apple ID. Se a reflexão falhar (classe ou método ausentes em outro build), o botão cai no
+comportamento antigo: abre a `MainActivity` do engine.
 
-Por que não uma activity/fragment de auth: o manifest do engine não declara nenhuma
+### Deep link / extra: não existe para o login de conta
+
+Testado no emulador (`am start -a VIEW -d ... -n com.apple.android.music/.common.MainActivity`):
+
+- `apple-music://accountSummary` → home do engine (nenhum auth);
+- `https://itunes.apple.com/accountSummary` → tela **Account** do engine (nenhum auth);
+- `music://itunes.apple.com/sonosAuth` e os demais `apple-music://...` são roteados pelo
+  `C3871e`/`deeplink` para destinos de conteúdo/commerce; não chamam
+  `showAMSAuthWithType`;
+- `musicsdk://applemusic/authenticate-v3?appPackage=<pkg>&devToken=<token>&appName=<nome>`
+  (`SdkAuthActivity`) **abre a mesma tela do Apple ID** via
+  `SdkLandingViewModel.signIn` → `X6.e.c(..., SDK)`, mas é o fluxo de autorização do
+  **MusicKit SDK**: exige `devToken`/`appPackage`, mostra o consentimento do SDK, devolve
+  um `music_user_token` para o app chamador, chama `moveTaskToBack` ao terminar e tem um
+  guard de uso único (`C.f45619d`). Com parâmetros de teste ele fica preso no loader.
+  Por isso **não** é usado como caminho principal; a reflexão é o caminho suportado.
+
+O manifest do engine não declara nenhuma activity de auth própria
 (`SdkAuthActivity`/`SonosAuthActivity` só repassam para a `MainActivity`;
 `SocialWebActivity` é WebView de social), e o diálogo é Compose — não dá para instanciá-lo
 numa `Activity` pura sem AndroidX/Compose no nosso dex.
+
+### Fechar o sheet (X) ou concluir o login
+
+O sheet AMS é um overlay Compose dentro da `MainActivity` do engine. Fechar pelo **X**
+(`userClosedPageView` → `onDismiss` → `DialogConnectorViewModel.hideAMSAuthWithType`) ou
+concluir o login (o `AmsAuthViewModel` emite o resultado e o mesmo `onDismiss` roda) só
+esconde o sheet; a home do engine continuaria na frente. A UI agora observa
+`getShouldShowAMSAuthWithType()` do `DialogConnectorViewModel` (por reflexão, a cada 250 ms)
+e, quando ele volta a `null`, chama `finish()` na `MainActivity`. Assim **X**, **BACK** e
+login concluído caem de volta nesta UI; o engine (processo, serviço e conta) continua vivo
+como backend.
+
+### Volta do engine: catálogo recarregado
+
+Ao abrir a `MainActivity` a UI marca `refreshOnResume`; no `onResume` ela limpa abas,
+prateleiras, drill-down e capas, reconecta o `MediaBrowser` (o serviço pode ter reiniciado
+após o login) e reassina `__AUTO_ROOT__`. O `MediaClient.disconnect()` descarta cache e
+callbacks, então nada velho é reentregue; se o catálogo vier vazio/erro (serviço ainda
+subindo), a UI reconecta até 4× antes de desistir.
 
 ## O que está funcional (P0)
 
@@ -134,7 +169,8 @@ numa `Activity` pura sem AndroidX/Compose no nosso dex.
 - **Busca**: `EditText` → `amp-api` com o developer token decifrado do engine (AES/GCM,
   alias `music_token_store_key`), resultados com capa; tocar toca pelo **id cru**.
   Fallback: botão "Abrir a busca do Apple Music" (deep link para `common.MainActivity`).
-- **Conta** abre o login do Apple ID direto (ver **Login**), não a home do engine.
+- **Conta** abre o login do Apple ID direto (ver **Login**), não a home do engine; fechar
+  pelo **X**, dar **BACK** ou concluir o login volta para esta UI com o catálogo recarregado.
 - **Atualizações**: mostra `Version.NAME (CODE)` e o engine instalado; checa o `updates.json`
   do último release (automático ao abrir, no máximo 1x/24 h; o botão força), compara
   `one-<abi>.versionCode`, baixa o APK da ABI com progresso, confere o SHA-256 e instala pela
@@ -152,6 +188,7 @@ numa `Activity` pura sem AndroidX/Compose no nosso dex.
 | Carro `100.74.124.38:5555` | não estava online; build arm32 gerado e não instalado. |
 | `RXCX100BZ5J` + `emulator-5554` (1.8.0/10800) | instalado por cima (versionCode 1614 igual, cert igual): segue logado e tocando (`state=PLAYING`). Botão **Atualizações** mostra `Instalada: 1.8.0 (10800)` e "Sem atualização" lendo o `updates.json` real da `apps-1.7.0`, que ainda não tem `one-*` (ausência tratada sem crashar). Evidências `.pipeline/one-update-phone-0*.png` e `.pipeline/one-update-tv-0*.png`. Download/instalação de um release com `one-*` ainda não exercitados (1.8.0 não publicado). |
 | `RXCX100BZ5J` + `emulator-5554` (1.8.2/10802) | **Conta** abre o login do Apple ID direto — "Continue com o e-mail ou número de telefone", WebView AMS carregada, sem a home do engine; X + BACK volta para esta UI com o catálogo carregado; busca HTTP 200 (`daft`, 18 resultados) no emulador depois de voltar; `logcat -b crash` vazio nos dois. Evidências `evidence/one-login-tv-0*.png` e `evidence/one-login-phone-0*.png`. Login completo (senha/2FA) não exercitado: a senha não está no repo e as duas contas já estavam logadas. |
+| `RXCX100BZ5J` + `emulator-5554` (1.8.3/10803) | **Conta** → login direto; **X** sozinho e **BACK** fecham a `MainActivity` e caem na UI com o catálogo recarregado (log `Apple ID sheet dismissed, finishing the engine host` + `back from the engine, rebuilding the browse session`); busca HTTP 200 nos dois (`daft`, 18 resultados); `logcat -b crash` vazio. Evidências `evidence/one-login-close-{tv,phone}-{before,sheet,after-x,after-back,search}.png`. Deep links testados: `apple-music://accountSummary` (home), `https://itunes.apple.com/accountSummary` (Account) e `musicsdk://applemusic/authenticate-v3` (abre o Apple ID, mas é o fluxo SDK; ver **Login**) — evidência `one-login-close-deeplink-sdk.png`. Login completo (senha/2FA) não exercitado; o sucesso usa o mesmo `onDismiss` do X (verificado no decompilado). |
 
 ## Limitações / P1
 
@@ -173,8 +210,10 @@ numa `Activity` pura sem AndroidX/Compose no nosso dex.
 - Foco inicial no D-pad pode cair na barra de topo antes de o conteúdo chegar; as abas
   têm `OnKeyListener` para DOWN entrar no conteúdo.
 - **Login**: o diálogo AMS é hospedado pela `MainActivity` do engine (única com o
-  `StoreApiDialogs`); a home dela fica atrás da `ComposeView` em tela cheia e reaparece se o
-  usuário fechar o diálogo antes de dar BACK. O fluxo de senha/2FA do Apple ID não é
-  exercitado automaticamente (a senha não está no repo).
+  `StoreApiDialogs`); a UI o fecha (X/BACK/sucesso) ao ver
+  `shouldShowAMSAuthWithType` voltar a `null`. O fluxo de senha/2FA do Apple ID não é
+  exercitado automaticamente (a senha não está no repo); o caminho de sucesso foi
+  verificado no decompilado (`AmsAuthViewModel` → `onDismiss` → mesmo
+  `hideAMSAuthWithType` do X).
 - **Assinatura**: os APKs saem com o cert Morphe; sem ele o `install -r` falha e a conta
   seria perdida ao desinstalar.
