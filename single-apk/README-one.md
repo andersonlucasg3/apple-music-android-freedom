@@ -235,6 +235,9 @@ Com targetSdk 36 o *predictive back* vem ligado: o sistema deixa de chamar
 - **Biblioteca / Rádio**: telas próprias (`LibraryScreen` em lista com chevron,
   `RadioScreen` em grade de estações), com breadcrumb, botão **‹** e drill-down; “Ver tudo”
   de uma prateleira abre o `CollectionScreen` em overlay com o mesmo tratamento.
+- **Navegação hierárquica**: artista → álbuns (browse), álbum → faixas e playlist → faixas
+  (amp-api), com **Tocar** a coleção inteira e toque numa faixa que já começa nela. Detalhes
+  de ids e degradação na seção **Navegação hierárquica**.
 - **Now Playing fullscreen**: fundo em gradiente escuro derivado da **cor dominante da
   capa** (`ColorArt`), capa grande 16 dp, título/artista/álbum, progresso com tempos,
   prev 60 / play 80 / next 60 (play em accent), **Criar Estação**, **Ações** e **Fila**.
@@ -290,14 +293,81 @@ Medido com o engine 7.0.0 (1614) logado, em `RXCX100BZ5J` (arm64) e `emulator-55
    true, position)` com índice 0. Os `startItemIndex` de
    `StorePlaybackQueueItemProvider`/`LibraryCollectionPlaybackQueueItemProvider` só são
    preenchidos pelos builders internos, não por extras da sessão.
-5. **A árvore do Android Auto deste engine só expõe coleções**: `__AUTO_ROOT__`,
-   `__AUTO_ROOT__/library` (5 nós: Aleatória, Adições Recentes, Playlists, Artistas,
-   Álbuns) e as prateleiras do Início. Álbuns/playlists vêm como itens **tocáveis e não
-   navegáveis** (`browsable=false, playable=true`) — ou seja, não há nó de faixas para
-   abrir. Por isso o caminho “tocar a coleção e pular para a faixa N” do
-   `CollectionScreen` só se ativa num nó de faixas (`/songs` ou itens com id de faixa);
-   hoje o “começar daqui” que o engine suporta é o da **fila** (Tocar o álbum/playlist →
-   Player → Fila → escolher a faixa), validado acima.
+5. **A árvore do Android Auto expõe artistas, mas não faixas de álbum/playlist** (detalhes e
+   ids na seção **Navegação hierárquica**): `__AUTO_ROOT__/library` tem 5 nós; os itens de
+   artista (`6-<persistentId>`) são marcados `browsable=false` mas **assiná-los devolve os
+   álbuns do artista**; um álbum (`3-`) ou uma playlist (`4-`) assinados devolvem a lista de
+   álbuns/playlists inteira, nunca as faixas. Por isso o “tocar a coleção e pular para a
+   faixa N” usa o **id de catálogo** resolvido na amp-api; o id de biblioteca continua
+   servindo para tocar a coleção inteira quando a resolução falha.
+
+## Navegação hierárquica
+
+Medido no device (engine 7.0.0, `RXCX100BZ5J` e `emulator-5554`) com uma sonda que assina
+cada nó e loga id/título/subtítulo/flags; os logs estão resumidos na tabela.
+
+### O que vem do browse tree
+
+| Nó assinado | Filhos | id do filho | flags do filho |
+|---|---|---|---|
+| `__AUTO_ROOT__` | Início, Rádio, Biblioteca | `__AUTO_ROOT__/home`, `/radio`, `/library` | `browsable` |
+| `__AUTO_ROOT__/library` | Aleatória (`/library/songs`), Adições Recentes, Playlists, Artistas, Álbuns | `__AUTO_ROOT__/library/<nó>` | Aleatória `playable`; demais `browsable` |
+| `/library/songs` | 0 | — | toca a biblioteca embaralhada |
+| `/library/recently_added` | 12 itens mistos | `.../recently_added/3-…` (álbum) e `/4-…` (playlist) | `playable` |
+| `/library/artists` | 93 artistas | `.../artists/6-<persistentId>` | `browsable=false`, `playable=true`, sem capa |
+| `/library/artists/<6-…>` | **os álbuns do artista** (AC/DC 1, Angra 2, Avenged Sevenfold 9) | `.../artists/6-…/3-<persistentId>` | `browsable=false`, `playable=true`, capa https |
+| `/library/albums` | 281 álbuns | `.../albums/3-<persistentId>` | `browsable=false`, `playable=true` |
+| `/library/albums/<3-…>` | **não são faixas**: devolve os 281 álbuns de novo (idem `/songs` e `/tracks`) | — | — |
+| `/library/playlists` | 18 playlists | `.../playlists/4-<persistentId>` | `browsable=false`, `playable=true` |
+| `/library/playlists/<4-…>` | 0 filhos; `/songs` e `/tracks` devolvem as 18 playlists de novo | — | — |
+| `/home/<prateleira>` | cards de catálogo | `3-<catalogId>`, `4-pl.<id>`, `9-ra.q-…` (estação) | `playable` |
+
+- **Formato dos ids**: itens de biblioteca são `<contentType>-<persistentId>` da
+  `MediaLibrary` — `3` álbum, `4` playlist, `6` artista —, sem id de catálogo. Os `extras`
+  da `MediaDescription` só trazem dicas de estilo do Android Auto. As prateleiras do Início
+  já vêm com **id de catálogo** (`3-1445027335`, `4-pl.…`). A fila revela ids de catálogo
+  de faixa (`queue[0] media=1704078588`), nunca o id de catálogo do álbum.
+- **Assinar o id do artista funciona mesmo com `browsable=false`** — é o que dá
+  artista → álbuns sem rede. Para álbum e playlist não existe nó de faixas na árvore, então
+  o nível de faixas vem da **amp-api**.
+
+### O que vem da amp-api
+
+| Chamada | Endpoint | Resultado medido |
+|---|---|---|
+| faixas do álbum | `/v1/catalog/{sf}/albums/{id}?include=tracks&limit[tracks]=100` | Aqua (Angra) → `1704078587`, 10 faixas |
+| faixas da playlist | `/v1/catalog/{sf}/playlists/{id}?include=tracks&limit[tracks]=100` | Backstreet Boys: essenciais → `pl.331a…`, 22 faixas |
+| álbuns do artista (medido, **não usado**) | `/v1/catalog/{sf}/artists/{id}?include=albums&limit[albums]=50` | AC/DC → `5040714`, 26 álbuns |
+
+O nível artista → álbuns é o único que fica **só no browse** (a assinatura do nó do artista
+já devolve os álbuns); a chamada de artista na amp-api foi medida como plano B, mas não
+entrou no código para não manter um caminho morto.
+
+O id de catálogo de um álbum/playlist **não** vem no browse, então ele é resolvido por
+nome: `/v1/catalog/{sf}/search?types=albums|playlists&limit=8` com o título e o
+artista/curador do item, e a escolha exige título igual (sem diferenciar caixa/espaços,
+ignorando os sufixos “ - Single”/“ - EP” e qualificadores como “(Deluxe Version)” que a
+biblioteca acrescenta) e, quando existe, o mesmo artista. Sem correspondência exata, a tela
+**degrada**: mostra “Faixas indisponíveis” e o **Tocar** toca a coleção pelo id de
+biblioteca (fluxo que já funcionava). Playlist criada pelo usuário não existe no catálogo —
+é o caso de degradação real medido (`Músicas favoritas`). O storefront/idioma são os do
+device (`br`/`pt-BR` no celular, `us`/`en-US` na TV).
+
+### Implementação
+
+`CollectionScreen` passou a ter uma pilha de níveis com dois tipos de nó: **browse**
+(assinatura no engine) e **álbum/playlist** (faixas da amp-api). Regras de clique:
+
+- id `.../artists/6-…`, `.../albums/3-…` ou `.../playlists/4-…` sob `/library` → desce um
+  nível (artista assina o nó, álbum/playlist vai para a amp-api);
+- id de catálogo vindo do Início (`3-<catalogId>`, `4-pl.…`) → usa o id direto, sem busca
+  por nome;
+- **Tocar** toca a coleção inteira: `playFromMediaId(<id de catálogo>)` monta a fila do
+  álbum/playlist;
+- tocar a faixa N chama `playFromMediaId(<álbum/playlist>)` + `skipToQueueItem(N-1)`
+  (índice da lista = índice da fila), e a linha em reprodução fica em accent;
+- “Ver tudo” das prateleiras e a Biblioteca/Rádio continuam usando o mesmo componente, com
+  breadcrumb, voltar e skeleton; cada nível novo começa no topo da lista.
 
 ## Validado
 
@@ -310,6 +380,8 @@ Medido com o engine 7.0.0 (1614) logado, em `RXCX100BZ5J` (arm64) e `emulator-55
 | `emulator-5554` (TV x86, 1.9.2, fila) | Instalado por cima. Álbum `Trance Life` tocando (0:05 → 0:16), pill **Fila** no layout lado a lado; sheet “A seguir” com 18 faixas; tocar a 3ª (`skipToQueueItem 2`) → metadata `Sana Corazón` com `state=PLAYING` e a fila reindexada; BACK fecha só o sheet, player continua; `logcat -b crash` vazio. |
 | `RXCX100BZ5J` (arm64, 1.9.1, conta) | Instalado por cima. Logado: painel **Conta** abre o perfil com inicial “A”, nome completo, Apple ID e **“Assinatura Individual”** (lidos de `AccountTable.json` + `settings.preferences_pb`, sem rede); `logcat` `signedIn=true accountFile=true status=ENABLED reason=INDIVIDUAL`; BACK/Fechar fecham; `logcat -b crash` vazio. |
 | `emulator-5554` (TV x86, 1.9.1, conta) | Instalado por cima. Mesmo perfil no layout TV (painel central), **“Assinatura Individual”**; estado deslogado verificado com override de teste (`one.signedOut`): convite + **Entrar na conta Apple** + Fechar, sem alterar a conta; `logcat -b crash` vazio. |
+| `RXCX100BZ5J` (arm64, 1.9.3, navegação) | Instalado por cima. **Biblioteca → Artistas** (93) → **Angra** (2 álbuns, capas do engine) → **Aqua** (10 faixas da amp-api, `amp-api HTTP 200 /br/albums/1704078587`) → **Tocar** = `playFromMediaId 1704078587`, `queue size=10` (20 com autoplay), metadata `Viderunt Te Aquae`; tocar a 3ª (`skipToQueueItem 2`) → `Awake from Darkness`, `state=PLAYING`, linha em accent; **Playlists** (18) → **Backstreet Boys: essenciais** (22 faixas) → Tocar = `playFromMediaId pl.331a…`, `queue size=22`; 3ª faixa (`skipToQueueItem 2`) → `Quit Playing Games (With My Heart)`, `PLAYING`; playlist de usuário **Músicas favoritas** degrada (“Faixas indisponíveis”) e **Tocar** toca pelo id de browse (`queue size=4`); BACK volta nível a nível; `logcat -b crash` vazio. |
+| `emulator-5554` (TV x86, 1.9.3, navegação) | Instalado por cima. Biblioteca → **Artists** (93, títulos em inglês na TV) → **Avenged Sevenfold** (9 álbuns) → **Hail to the King (Deluxe Version)** (12 faixas; id de catálogo US `672046420` resolvido pelo título base) → **Tocar** = `queue size=12` (22), metadata `Shepherd of Fire`; 3ª (`Doing Time`, `skipToQueueItem 2`) → `PLAYING`; **Playlists** → **Backstreet Boys Essentials** (22 faixas) → Tocar = `queue size=22`; 3ª (`Quit Playing Games (With My Heart)`) → `PLAYING`; lista sempre começa na faixa 1 (scroll reset); `logcat -b crash` vazio. |
 
 Evidências lado a lado com as referências dos companions
 (`.pipeline/revamp-tv/`, `.pipeline/revamp-car/` e as fotos de celular em
@@ -345,6 +417,14 @@ accent), `queue-04-skipped.png` e `queue-13-tv-skipped.png` (depois do
 `skipToQueueItem 2`: destaque na faixa 3 e fila reindexada), `queue-05-playing.png`,
 `queue-06-resumed.png` e `queue-14-tv-back.png` (reprodução seguindo depois do salto),
 `queue-01-albums.png` (lista de álbuns sem numeração/“Tocar”).
+
+Hierarquia (1.9.3): `nav-02-artist-albums.png` (Angra → 2 álbuns),
+`nav-03-album-tracks.png` (Aqua → 10 faixas + Tocar), `nav-04-third-track.png` (3ª faixa
+tocando, em accent), `nav-05-playlist-tracks.png` (Backstreet Boys: essenciais → 22
+faixas), `nav-06-playlist-third.png`, `nav-07-playlist-degrade.png` (playlist de usuário
+sem catálogo, com Tocar), `nav-tv-01-artist-albums.png`, `nav-tv-02-album-tracks.png`,
+`nav-tv-03-third-track.png`, `nav-tv-04-playlist-tracks.png` e
+`nav-tv-05-playlist-third.png` (mesmos níveis na TV).
 
 ## Limitações / P1
 

@@ -472,9 +472,9 @@ public final class OneActivity extends Activity
             homeScreen.bind(tab);
         } else {
             if (kind == KIND_RADIO) {
-                tabCollection = new RadioScreen(this, this, artwork);
+                tabCollection = new RadioScreen(this, this, artwork, catalog);
             } else {
-                tabCollection = new LibraryScreen(this, this, artwork);
+                tabCollection = new LibraryScreen(this, this, artwork, catalog);
             }
             view = tabCollection.view();
             screenHost.addView(view, new FrameLayout.LayoutParams(
@@ -610,7 +610,7 @@ public final class OneActivity extends Activity
     @Override
     public void openCollection(String title, String parentId, boolean grid) {
         closeCollectionOverlay();
-        overlayCollection = new CollectionScreen(this, this, artwork,
+        overlayCollection = new CollectionScreen(this, this, artwork, catalog,
                 grid ? CollectionScreen.GRID : CollectionScreen.LIST, Icons.NOTE);
         collectionHost.removeAllViews();
         collectionHost.addView(overlayCollection.view(), new FrameLayout.LayoutParams(

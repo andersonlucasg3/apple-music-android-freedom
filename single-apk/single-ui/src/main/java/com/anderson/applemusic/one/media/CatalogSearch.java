@@ -56,10 +56,34 @@ public final class CatalogSearch {
         }
     }
 
+    /**
+     * A collection resolved in the catalogue: the id used by {@code playFromMediaId}, its
+     * title/artist and what sits under it (tracks of an album/playlist, albums of an artist).
+     */
+    public static final class Collection {
+        public final String id;
+        public final String title;
+        public final String artist;
+        public final List<Result> items;
+
+        public Collection(String id, String title, String artist, List<Result> items) {
+            this.id = id == null ? "" : id;
+            this.title = title == null ? "" : title;
+            this.artist = artist == null ? "" : artist;
+            this.items = items == null ? Collections.<Result>emptyList() : items;
+        }
+    }
+
     public interface Callback {
         void onResults(List<Result> results);
 
         void onFailure(String message, boolean tokenMissing);
+    }
+
+    public interface CollectionCallback {
+        void onCollection(Collection collection);
+
+        void onFailure(String message);
     }
 
     private static final String TAG = "AppleMusicOne";
@@ -107,7 +131,7 @@ public final class CatalogSearch {
                         postFailure(callback, "Não foi possível ler o token do Apple Music", true);
                         return;
                     }
-                    HttpResult response = request(term, token);
+                    HttpResult response = request(searchPath(term), token);
                     if (response.unauthorized) {
                         // The engine refreshes the JWT in the file; read it again.
                         cachedToken = null;
@@ -116,7 +140,7 @@ public final class CatalogSearch {
                             postFailure(callback, "Token do Apple Music expirado", true);
                             return;
                         }
-                        response = request(term, token);
+                        response = request(searchPath(term), token);
                     }
                     if (response.unauthorized) {
                         postFailure(callback,
@@ -157,6 +181,101 @@ public final class CatalogSearch {
         executor.shutdownNow();
     }
 
+    // --- catalogue hierarchy ------------------------------------------------------
+
+    /**
+     * Track list of a catalogue album. The browse tree only carries the library
+     * persistent id, so the album has to be resolved by name first
+     * ({@link #findAlbum(String, String, CollectionCallback)}).
+     */
+    public void albumTracks(final String albumId, final CollectionCallback callback) {
+        load("/" + storefront() + "/albums/" + encode(albumId)
+                        + "?include=tracks&limit[tracks]=100&l=" + language(),
+                new JsonParser<Collection>() {
+                    @Override
+                    public Collection parse(String body) throws Exception {
+                        return collection(body, "tracks", albumId);
+                    }
+                }, collectionWaiter(callback));
+    }
+
+    /** Track list of a catalogue playlist id (Home shelves carry the catalogue id). */
+    public void playlistTracks(final String playlistId, final CollectionCallback callback) {
+        load("/" + storefront() + "/playlists/" + encode(playlistId)
+                        + "?include=tracks&limit[tracks]=100&l=" + language(),
+                new JsonParser<Collection>() {
+                    @Override
+                    public Collection parse(String body) throws Exception {
+                        return collection(body, "tracks", playlistId);
+                    }
+                }, collectionWaiter(callback));
+    }
+
+    /** Resolves an album by title+artist and returns its catalogue track list. */
+    public void findAlbum(final String title, final String artist,
+                          final CollectionCallback callback) {
+        final String term = clean(title + " " + artist);
+        load("/" + storefront() + "/search?term=" + encode(term)
+                        + "&types=albums&limit=8&l=" + language(),
+                new JsonParser<List<Result>>() {
+                    @Override
+                    public List<Result> parse(String body) {
+                        return CatalogSearch.this.parse(body);
+                    }
+                }, new Waiter<List<Result>>() {
+                    @Override
+                    public void deliver(List<Result> results) {
+                        Result match = pick(results, title, artist);
+                        if (match == null) {
+                            callback.onFailure("Álbum não encontrado no catálogo");
+                            return;
+                        }
+                        albumTracks(match.id, callback);
+                    }
+
+                    @Override
+                    public void fail(String message) {
+                        callback.onFailure(message);
+                    }
+                });
+    }
+
+    /** Track list of a catalogue playlist, resolved by title+curator. */
+    public void findPlaylist(final String title, final String curator,
+                             final CollectionCallback callback) {
+        final String term = clean(title + " " + curator);
+        load("/" + storefront() + "/search?term=" + encode(term)
+                        + "&types=playlists&limit=8&l=" + language(),
+                new JsonParser<List<Result>>() {
+                    @Override
+                    public List<Result> parse(String body) {
+                        return CatalogSearch.this.parse(body);
+                    }
+                }, new Waiter<List<Result>>() {
+                    @Override
+                    public void deliver(List<Result> results) {
+                        Result match = pick(results, title, curator);
+                        if (match == null) {
+                            callback.onFailure("Playlist não encontrada no catálogo");
+                            return;
+                        }
+                        load("/" + storefront() + "/playlists/" + encode(match.id)
+                                        + "?include=tracks&limit[tracks]=100&l=" + language(),
+                                new JsonParser<Collection>() {
+                                    @Override
+                                    public Collection parse(String body) throws Exception {
+                                        return collection(body, "tracks", match.id);
+                                    }
+                                }, collectionWaiter(callback));
+                    }
+
+                    @Override
+                    public void fail(String message) {
+                        callback.onFailure(message);
+                    }
+                });
+    }
+
     // --- amp-api -----------------------------------------------------------------
 
     private static final class HttpResult {
@@ -165,11 +284,10 @@ public final class CatalogSearch {
         String error;
     }
 
-    private HttpResult request(String term, String token) {
+    private HttpResult request(String relative, String token) {
         HttpResult result = new HttpResult();
         HttpURLConnection connection = null;
-        String url = ENDPOINT + "/" + storefront() + "/search?term=" + encode(term)
-                + "&types=songs,albums,artists,playlists&limit=8&l=" + language();
+        String url = ENDPOINT + relative;
         try {
             connection = (HttpURLConnection) new URL(url).openConnection();
             connection.setConnectTimeout(15000);
@@ -180,7 +298,8 @@ public final class CatalogSearch {
             int code = connection.getResponseCode();
             InputStream stream = code >= 400 ? connection.getErrorStream() : connection.getInputStream();
             result.body = stream != null ? text(stream) : "";
-            Log.i(TAG, "search HTTP " + code + " bytes=" + result.body.length() + " term=\"" + term + "\"");
+            Log.i(TAG, "amp-api HTTP " + code + " bytes=" + result.body.length()
+                    + " path=" + relative);
             if (code == HttpURLConnection.HTTP_OK) {
                 return result;
             }
@@ -188,10 +307,10 @@ public final class CatalogSearch {
                     || code == HttpURLConnection.HTTP_FORBIDDEN) {
                 result.unauthorized = true;
             } else {
-                result.error = "Busca falhou (HTTP " + code + ")";
+                result.error = "Apple Music falhou (HTTP " + code + ")";
             }
         } catch (Throwable t) {
-            Log.e(TAG, "search request failed", t);
+            Log.e(TAG, "amp-api request failed", t);
             result.error = "Sem conexão com o Apple Music";
         } finally {
             if (connection != null) connection.disconnect();
@@ -239,6 +358,203 @@ public final class CatalogSearch {
         String url = artwork.optString("url");
         if (url.length() == 0) return null;
         return url.replace("{w}", "300").replace("{h}", "300");
+    }
+
+    private static String searchPath(String term) {
+        return "/" + storefront() + "/search?term=" + encode(term)
+                + "&types=songs,albums,artists,playlists&limit=8&l=" + language();
+    }
+
+    // --- hierarchy lookups -------------------------------------------------------
+
+    private interface JsonParser<T> {
+        T parse(String body) throws Exception;
+    }
+
+    private interface Waiter<T> {
+        void deliver(T value);
+
+        void fail(String message);
+    }
+
+    /** Runs one amp-api GET off the UI thread, reviving the token once on 401. */
+    private <T> void load(final String relative, final JsonParser<T> parser,
+                          final Waiter<T> waiter) {
+        executor.execute(new Runnable() {
+            @Override
+            public void run() {
+                try {
+                    String token = developerToken();
+                    if (token == null) {
+                        failWaiter(waiter, "Não foi possível ler o token do Apple Music");
+                        return;
+                    }
+                    HttpResult response = request(relative, token);
+                    if (response.unauthorized) {
+                        cachedToken = null;
+                        token = developerToken();
+                        if (token == null) {
+                            failWaiter(waiter, "Token do Apple Music expirado");
+                            return;
+                        }
+                        response = request(relative, token);
+                    }
+                    if (response.unauthorized) {
+                        failWaiter(waiter,
+                                "Token do Apple Music expirado. Abra o app original e entre na conta.");
+                        return;
+                    }
+                    if (response.error != null) {
+                        failWaiter(waiter, response.error);
+                        return;
+                    }
+                    final T value = parser.parse(response.body);
+                    if (value == null) {
+                        failWaiter(waiter, "O Apple Music não retornou este item");
+                        return;
+                    }
+                    main.post(new Runnable() {
+                        @Override
+                        public void run() {
+                            waiter.deliver(value);
+                        }
+                    });
+                } catch (Throwable t) {
+                    Log.e(TAG, "amp-api lookup failed", t);
+                    failWaiter(waiter, t instanceof IllegalArgumentException
+                            ? "Resposta inesperada do Apple Music"
+                            : "Sem conexão com o Apple Music");
+                }
+            }
+        });
+    }
+
+    private <T> void failWaiter(final Waiter<T> waiter, final String message) {
+        main.post(new Runnable() {
+            @Override
+            public void run() {
+                waiter.fail(message);
+            }
+        });
+    }
+
+    private Waiter<Collection> collectionWaiter(final CollectionCallback callback) {
+        return new Waiter<Collection>() {
+            @Override
+            public void deliver(Collection collection) {
+                callback.onCollection(collection);
+            }
+
+            @Override
+            public void fail(String message) {
+                callback.onFailure(message);
+            }
+        };
+    }
+
+    /** Reads {@code data[0].relationships.<relationship>.data} into a {@link Collection}. */
+    private Collection collection(String body, String relationship, String fallbackId)
+            throws Exception {
+        JSONObject root = new JSONObject(body);
+        JSONArray data = root.optJSONArray("data");
+        if (data == null || data.length() == 0) return null;
+        JSONObject item = data.optJSONObject(0);
+        if (item == null) return null;
+        JSONObject attributes = item.optJSONObject("attributes");
+        if (attributes == null) attributes = new JSONObject();
+        String id = item.optString("id");
+        if (id.length() == 0) id = fallbackId;
+        JSONObject relationships = item.optJSONObject("relationships");
+        JSONObject group = relationships == null ? null : relationships.optJSONObject(relationship);
+        JSONArray entries = group == null ? null : group.optJSONArray("data");
+        List<Result> items = new ArrayList<Result>();
+        if (entries != null) {
+            for (int i = 0; i < entries.length(); i++) {
+                JSONObject entry = entries.optJSONObject(i);
+                if (entry == null) continue;
+                String entryId = entry.optString("id");
+                if (entryId.length() == 0) continue;
+                JSONObject entryAttributes = entry.optJSONObject("attributes");
+                if (entryAttributes == null) continue;
+                String name = entryAttributes.optString("name");
+                if (name.length() == 0) continue;
+                String artist = entryAttributes.optString("artistName");
+                if (artist.length() == 0) artist = attributes.optString("artistName");
+                items.add(new Result(entryId, "Música", name, artist,
+                        artwork(entryAttributes)));
+            }
+        }
+        return new Collection(id, attributes.optString("name"),
+                attributes.optString("artistName"), items);
+    }
+
+    /**
+     * Best catalogue match for a browse item: same title (case/spacing insensitive) and,
+     * when the browse item carries an artist, the same artist. Library titles often add a
+     * " - Single"/" - EP" suffix or a "(Deluxe Version)"/"(Remastered)" qualifier the
+     * catalogue name does not carry, so those are compared base-to-base before giving up.
+     * Returns null instead of guessing, so the UI degrades to "play the whole collection"
+     * rather than showing the tracks of a different album.
+     */
+    private static Result pick(List<Result> items, String title, String artist) {
+        String want = normalize(title);
+        String wantBase = stripQualifiers(want);
+        String who = clean(artist).toLowerCase(Locale.ROOT);
+        Result base = null;
+        for (Result item : items) {
+            String itemTitle = normalize(item.title);
+            boolean sameArtist = who.length() == 0
+                    || clean(item.artist).toLowerCase(Locale.ROOT).equals(who);
+            if (itemTitle.equals(want) && sameArtist) return item;
+            if (base == null && sameArtist
+                    && stripQualifiers(itemTitle).equals(wantBase)) {
+                base = item;
+            }
+        }
+        if (base != null) return base;
+        for (Result item : items) {
+            if (normalize(item.title).equals(want)) return item;
+        }
+        for (Result item : items) {
+            if (stripQualifiers(normalize(item.title)).equals(wantBase)) return item;
+        }
+        Log.w(TAG, "no catalogue match for \"" + title + "\" / \"" + artist + "\" among "
+                + items.size() + " result(s)");
+        for (int i = 0; i < Math.min(5, items.size()); i++) {
+            Log.w(TAG, "  candidate \"" + items.get(i).title + "\" / \"" + items.get(i).artist
+                    + "\"");
+        }
+        return null;
+    }
+
+    private static String clean(String value) {
+        return value == null ? "" : value.replaceAll("\\s+", " ").trim();
+    }
+
+    /**
+     * The library titles singles/EPs with a " - Single"/" - EP" suffix the catalogue name
+     * does not carry; strip it before comparing so "A Capella - Single" matches "A Capella".
+     */
+    private static String normalize(String value) {
+        String text = clean(value).toLowerCase(Locale.ROOT);
+        if (text.endsWith(" - single")) {
+            text = text.substring(0, text.length() - " - single".length()).trim();
+        } else if (text.endsWith(" - ep")) {
+            text = text.substring(0, text.length() - " - ep".length()).trim();
+        }
+        return text;
+    }
+
+    /** Drops trailing "(Deluxe Version)"/"[Remastered]"-style qualifiers. */
+    private static String stripQualifiers(String value) {
+        String text = value == null ? "" : value.trim();
+        while (true) {
+            int end = -1;
+            if (text.endsWith(")")) end = text.lastIndexOf('(');
+            else if (text.endsWith("]")) end = text.lastIndexOf('[');
+            if (end <= 0) return text;
+            text = text.substring(0, end).trim();
+        }
     }
 
     // --- engine token ------------------------------------------------------------

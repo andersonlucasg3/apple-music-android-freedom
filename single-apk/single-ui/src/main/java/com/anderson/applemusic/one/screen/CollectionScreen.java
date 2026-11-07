@@ -11,6 +11,7 @@ import android.widget.ScrollView;
 import android.widget.TextView;
 
 import com.anderson.applemusic.one.media.ArtworkLoader;
+import com.anderson.applemusic.one.media.CatalogSearch;
 import com.anderson.applemusic.one.media.MediaClient;
 import com.anderson.applemusic.one.theme.Inter;
 import com.anderson.applemusic.one.theme.Tokens;
@@ -30,15 +31,51 @@ import java.util.List;
  * Category browser used by Biblioteca (list), Rádio (grid) and the "Ver tudo"/
  * browsable-item overlay. Keeps its own stack, so every level has a breadcrumb and a
  * back action; it is deliberately not the Home screen with a different title.
+ *
+ * <p>Two kinds of level live in the same stack. The engine's Auto tree exposes the
+ * library categories, the artists and the artist's albums (subscribing an artist id is
+ * what lists its albums, even though the artist item itself is flagged
+ * {@code browsable=false}), so those are plain browse nodes. Albums and playlists are
+ * playable leaves with only a library persistent id in the browse tree, so their track
+ * list comes from amp-api by name ({@link CatalogSearch#findAlbum}, {@link
+ * CatalogSearch#findPlaylist}); when that resolution fails the level degrades to "play
+ * the whole collection" instead of breaking.
  */
 public class CollectionScreen implements ChildSink {
 
     public static final int LIST = 0;
     public static final int GRID = 1;
 
+    private static final int BROWSE = 0;
+    private static final int ALBUM = 1;
+    private static final int PLAYLIST = 2;
+
+    /** One level of the stack: either a browse node or a catalogue album/playlist. */
+    private static final class Node {
+        final String id;
+        final String title;
+        final String subtitle;
+        final int kind;
+        /** Catalogue id when the browse id already carries it (Home shelves). */
+        final String directId;
+        String catalogId;
+        List<CatalogSearch.Result> items;
+        boolean failed;
+        String failure;
+
+        Node(String id, String title, String subtitle, int kind, String directId) {
+            this.id = id == null ? "" : id;
+            this.title = title == null ? "" : title;
+            this.subtitle = subtitle == null ? "" : subtitle;
+            this.kind = kind;
+            this.directId = directId;
+        }
+    }
+
     protected final Context context;
     protected final ScreenHost host;
     protected final ArtworkLoader artwork;
+    protected final CatalogSearch catalog;
 
     private final int mode;
     private final int emptyIcon;
@@ -47,9 +84,9 @@ public class CollectionScreen implements ChildSink {
     private final TextView titleView;
     private final TextView subtitleView;
     private final LinearLayout column;
+    private final ScrollView scroll;
     private final Pill playAll;
-    private final List<String> ids = new ArrayList<String>();
-    private final List<String> titles = new ArrayList<String>();
+    private final List<Node> stack = new ArrayList<Node>();
     /** Track rows of the current node, when the node is a track list, with their media ids. */
     private final List<TrackRow> trackRows = new ArrayList<TrackRow>();
     private final List<String> trackIds = new ArrayList<String>();
@@ -58,12 +95,15 @@ public class CollectionScreen implements ChildSink {
     private String failedId;
     private boolean exitOnRootBack;
     private boolean trackList;
+    /** Guards amp-api callbacks against a level the user already left. */
+    private int generation;
 
-    public CollectionScreen(Context context, ScreenHost host, ArtworkLoader artwork, int mode,
-                            int emptyIcon) {
+    public CollectionScreen(Context context, ScreenHost host, ArtworkLoader artwork,
+                            CatalogSearch catalog, int mode, int emptyIcon) {
         this.context = context;
         this.host = host;
         this.artwork = artwork;
+        this.catalog = catalog;
         this.mode = mode;
         this.emptyIcon = emptyIcon;
 
@@ -105,8 +145,9 @@ public class CollectionScreen implements ChildSink {
         header.addView(heading, new LinearLayout.LayoutParams(0,
                 ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
 
-        // "Tocar": plays the whole collection from the first track. Only meaningful when the
-        // node lists tracks (albums/playlists), so it stays hidden for category lists.
+        // "Tocar": plays the whole collection. Shown for track lists (browse) and for the
+        // album/playlist levels, where it plays the catalogue id (or the browse collection
+        // when the catalogue lookup failed).
         playAll = Pill.accent(context, Icons.PLAY, "Tocar");
         playAll.setVisibility(View.GONE);
         LinearLayout.LayoutParams playAllParams = new LinearLayout.LayoutParams(
@@ -115,8 +156,7 @@ public class CollectionScreen implements ChildSink {
         playAll.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {
-                if (ids.isEmpty()) return;
-                host.playId(ids.get(ids.size() - 1), titles.get(titles.size() - 1));
+                playTop();
             }
         });
         header.addView(playAll, playAllParams);
@@ -125,7 +165,7 @@ public class CollectionScreen implements ChildSink {
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
 
         FrameLayout contentHost = new FrameLayout(context);
-        ScrollView scroll = new ScrollView(context);
+        scroll = new ScrollView(context);
         scroll.setFillViewport(true);
         column = new LinearLayout(context);
         column.setOrientation(LinearLayout.VERTICAL);
@@ -150,36 +190,53 @@ public class CollectionScreen implements ChildSink {
 
     /** Starts at a browse node (the tab root). */
     public void bind(String parentId, String title) {
-        ids.clear();
-        titles.clear();
-        open(parentId, title);
+        stack.clear();
+        generation++;
+        push(new Node(parentId, title, "", BROWSE, null));
     }
 
-    private void open(String parentId, String title) {
-        ids.add(parentId);
-        titles.add(title);
+    private Node top() {
+        return stack.isEmpty() ? null : stack.get(stack.size() - 1);
+    }
+
+    private void push(Node node) {
+        stack.add(node);
+        render();
+    }
+
+    /** Header, loading state and the source (browse children or amp-api) of the top level. */
+    private void render() {
         renderHeader();
-        load(parentId);
-    }
-
-    private void load(String parentId) {
-        failedId = null;
+        Node node = top();
         showLoading();
-        host.loadChildren(parentId, this);
+        // Every level starts at its first row: the ScrollView keeps the previous level offset.
+        scroll.post(new Runnable() {
+            @Override
+            public void run() {
+                scroll.scrollTo(0, 0);
+            }
+        });
+        if (node == null) return;
+        if (node.kind == BROWSE) {
+            host.loadChildren(node.id, this);
+        } else {
+            loadRemote(node);
+        }
     }
 
     private void renderHeader() {
-        if (ids.isEmpty()) return;
-        titleView.setText(titles.get(titles.size() - 1));
-        back.setVisibility(ids.size() > 1 || exitOnRootBack ? View.VISIBLE : View.GONE);
-        subtitleView.setText(ids.size() > 1 ? breadcrumb() : "Apple Music");
+        Node node = top();
+        if (node == null) return;
+        titleView.setText(node.title);
+        back.setVisibility(stack.size() > 1 || exitOnRootBack ? View.VISIBLE : View.GONE);
+        subtitleView.setText(stack.size() > 1 ? breadcrumb() : "Apple Music");
     }
 
     private String breadcrumb() {
         StringBuilder builder = new StringBuilder();
-        for (int i = 0; i < titles.size(); i++) {
+        for (int i = 0; i < stack.size(); i++) {
             if (i > 0) builder.append("  ›  ");
-            builder.append(titles.get(i));
+            builder.append(stack.get(i).title);
         }
         return builder.toString();
     }
@@ -210,15 +267,18 @@ public class CollectionScreen implements ChildSink {
         }
     }
 
+    // --- browse levels ------------------------------------------------------------
+
     @Override
     public void onChildren(String parentId, List<MediaClient.Item> children) {
-        if (ids.isEmpty() || !parentId.equals(ids.get(ids.size() - 1))) return;
+        Node node = top();
+        if (node == null || node.kind != BROWSE || !parentId.equals(node.id)) return;
         stopSkeleton();
         column.removeAllViews();
         clearTrackRows();
         if (children.isEmpty()) {
             column.addView(empty("Nada aqui",
-                    "O Apple Music não retornou itens para " + titles.get(titles.size() - 1) + "."));
+                    "O Apple Music não retornou itens para " + node.title + "."));
             subtitleView.setText("0 itens");
             host.status("");
             return;
@@ -272,32 +332,133 @@ public class CollectionScreen implements ChildSink {
 
     @Override
     public void onFailed(String parentId) {
-        if (ids.isEmpty() || !parentId.equals(ids.get(ids.size() - 1))) return;
+        Node node = top();
+        if (node == null || node.kind != BROWSE || !parentId.equals(node.id)) return;
         stopSkeleton();
         column.removeAllViews();
         failedId = parentId;
         EmptyState failure = new EmptyState(context, Icons.CLOSE, "Não foi possível carregar",
-                "Sem conexão com o Apple Music (" + titles.get(titles.size() - 1) + ").");
+                "Sem conexão com o Apple Music (" + node.title + ").");
         Pill retry = Pill.surface(context, Icons.REFRESH, "Tentar de novo");
         retry.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {
-                if (failedId != null) load(failedId);
+                if (failedId != null) render();
             }
         });
         failure.addAction(retry);
         column.addView(failure, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
-        host.status("Não foi possível carregar " + titles.get(titles.size() - 1));
+        host.status("Não foi possível carregar " + node.title);
     }
+
+    // --- album/playlist levels (amp-api) -------------------------------------------
+
+    private void loadRemote(final Node node) {
+        final int token = ++generation;
+        CatalogSearch.CollectionCallback callback = new CatalogSearch.CollectionCallback() {
+            @Override
+            public void onCollection(CatalogSearch.Collection collection) {
+                if (!isCurrent(node, token)) return;
+                node.catalogId = collection.id;
+                node.items = collection.items;
+                node.failed = collection.items.isEmpty();
+                renderRemote(node);
+            }
+
+            @Override
+            public void onFailure(String message) {
+                if (!isCurrent(node, token)) return;
+                node.failed = true;
+                node.failure = message;
+                renderRemote(node);
+            }
+        };
+        if (node.kind == ALBUM) {
+            if (node.directId != null) {
+                catalog.albumTracks(node.directId, callback);
+            } else {
+                catalog.findAlbum(node.title, node.subtitle, callback);
+            }
+        } else {
+            if (node.directId != null) {
+                catalog.playlistTracks(node.directId, callback);
+            } else {
+                catalog.findPlaylist(node.title, node.subtitle, callback);
+            }
+        }
+    }
+
+    private boolean isCurrent(Node node, int token) {
+        return token == generation && top() == node;
+    }
+
+    private void renderRemote(Node node) {
+        stopSkeleton();
+        column.removeAllViews();
+        clearTrackRows();
+        playAll.setVisibility(View.VISIBLE);
+        if (node.failed) {
+            subtitleView.setText("Sem lista de faixas");
+            String message = node.failure != null && node.failure.length() > 0
+                    ? node.failure
+                    : "O catálogo não devolveu as faixas deste item.";
+            EmptyState state = new EmptyState(context, emptyIcon, "Faixas indisponíveis",
+                    message + " Use Tocar para ouvir a coleção inteira.");
+            column.addView(state, new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+            host.status("");
+            return;
+        }
+        trackList = true;
+        subtitleView.setText(node.items.size() + " faixas");
+        host.status("");
+        final Node current = node;
+        for (int i = 0; i < node.items.size(); i++) {
+            final CatalogSearch.Result item = node.items.get(i);
+            final int index = i;
+            TrackRow track = new TrackRow(context, i + 1, item.title, item.artist);
+            track.setOnClickListener(new View.OnClickListener() {
+                @Override
+                public void onClick(View v) {
+                    if (current.catalogId == null) {
+                        host.status("Toque em Tocar para ouvir esta coleção");
+                        return;
+                    }
+                    host.playCollectionFrom(current.catalogId, current.title, index,
+                            new MediaClient.Item(item.id, item.title, item.artist, null,
+                                    false, true));
+                }
+            });
+            trackRows.add(track);
+            trackIds.add(item.id);
+            trackTitles.add(item.title);
+            LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+            params.bottomMargin = Tokens.dp(2);
+            column.addView(track, params);
+        }
+        updatePlayback(host.nowPlaying());
+    }
+
+    private void playTop() {
+        Node node = top();
+        if (node == null) return;
+        if (node.kind == BROWSE) {
+            if (trackList) host.playId(node.id, node.title);
+            return;
+        }
+        host.playId(node.catalogId != null ? node.catalogId : node.id, node.title);
+    }
+
+    // --- rendering ----------------------------------------------------------------
 
     private View empty(String title, String message) {
         return new EmptyState(context, emptyIcon, title, message);
     }
 
     private void addList(List<MediaClient.Item> items) {
-        final String collectionId = ids.get(ids.size() - 1);
-        final String collectionTitle = titles.get(titles.size() - 1);
+        final Node node = top();
         for (int i = 0; i < items.size(); i++) {
             final MediaClient.Item item = items.get(i);
             final int index = i;
@@ -307,7 +468,7 @@ public class CollectionScreen implements ChildSink {
                 track.setOnClickListener(new View.OnClickListener() {
                     @Override
                     public void onClick(View v) {
-                        host.playCollectionFrom(collectionId, collectionTitle, index, item);
+                        host.playCollectionFrom(node.id, node.title, index, item);
                     }
                 });
                 track.setOnLongClickListener(new View.OnLongClickListener() {
@@ -323,7 +484,7 @@ public class CollectionScreen implements ChildSink {
                 row = track;
             } else {
                 ListRow listRow = new ListRow(context, artwork, item.title, item.subtitle,
-                        item.artworkUri, item.browsable);
+                        item.artworkUri, drills(item));
                 listRow.setOnClickListener(new View.OnClickListener() {
                     @Override
                     public void onClick(View v) {
@@ -383,33 +544,68 @@ public class CollectionScreen implements ChildSink {
         }
     }
 
+    // --- hierarchy ----------------------------------------------------------------
+
+    /** Last segment of a browse id: the library entity type and its persistent id. */
+    private static String lastSegment(String id) {
+        int slash = id.lastIndexOf('/');
+        return slash < 0 ? id : id.substring(slash + 1);
+    }
+
+    /**
+     * True when the row opens another level: browsable nodes, and the library rows whose
+     * id is an artist ("6-"), album ("3-") or playlist ("4-") persistent id.
+     */
+    private static boolean drills(MediaClient.Item item) {
+        String last = lastSegment(item.id);
+        return item.browsable
+                || (item.id.contains("/library/") && last.startsWith("6-"))
+                || last.startsWith("3-")
+                || last.startsWith("4-");
+    }
+
     private void choose(MediaClient.Item item) {
-        if (item.browsable) {
-            open(item.id, item.title);
-        } else if (item.playable) {
-            host.play(item);
-        } else {
-            host.status("Item não reproduzível");
+        String last = lastSegment(item.id);
+        boolean library = item.id.contains("/library/");
+        if (last.startsWith("3-")) {
+            push(new Node(item.id, item.title, item.subtitle, ALBUM,
+                    library ? null : last.substring(2)));
+            return;
         }
+        if (last.startsWith("4-")) {
+            push(new Node(item.id, item.title, item.subtitle, PLAYLIST,
+                    library ? null : last.substring(2)));
+            return;
+        }
+        if (item.browsable || (library && last.startsWith("6-"))) {
+            push(new Node(item.id, item.title, item.subtitle, BROWSE, null));
+            return;
+        }
+        if (item.playable) {
+            host.play(item);
+            return;
+        }
+        host.status("Item não reproduzível");
     }
 
     /** Breadcrumb back: false when the screen is already at its tab root. */
     public boolean back() {
-        if (ids.size() <= 1) {
+        if (stack.size() <= 1) {
             if (exitOnRootBack) {
                 host.closeCollection();
                 return true;
             }
             return false;
         }
-        ids.remove(ids.size() - 1);
-        titles.remove(titles.size() - 1);
-        renderHeader();
-        load(ids.get(ids.size() - 1));
+        stack.remove(stack.size() - 1);
+        generation++;
+        failedId = null;
+        render();
         return true;
     }
 
     public void dispose() {
+        generation++;
         host.forgetChildren(this);
         if (skeleton != null) {
             skeleton.stop();
