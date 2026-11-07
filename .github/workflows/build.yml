@@ -352,7 +352,8 @@ jobs:
           echo "dex: $("$BUILD_TOOLS/dexdump" -l plain "$DEX" | grep -c 'Class descriptor') classes, all com.anderson.applemusic.one.*"
 
           build_one() {
-            local abi="$1" engine="dist/AppleMusic-engine-$abi.apk" work="one/$abi"
+            local abi="$1"
+            local engine="dist/AppleMusic-engine-$abi.apk" work="one/$abi"
             mkdir -p "$work"
             unzip -p "$engine" AndroidManifest.xml > "$work/manifest.bin"
             python3 single-apk/tools/axml_inject.py --in "$work/manifest.bin" \
@@ -381,7 +382,8 @@ jobs:
           set -euo pipefail
           EXPECTED_CERT_SHA256="1e058623722ed37eb59bb55411d01d6b7b212c6a8353aacecd60d515cee60463"
           verify_one() {
-            local abi="$1" arch="$2" apk="dist/AppleMusic-one-$abi.apk" certs fingerprint badging
+            local abi="$1" arch="$2"
+            local apk="dist/AppleMusic-one-$abi.apk" certs fingerprint badging
             "$BUILD_TOOLS/zipalign" -c -p 4 "$apk"
             certs="$("$BUILD_TOOLS/apksigner" verify --print-certs "$apk")"
             grep -q "CN=Morphe" <<< "$certs"
