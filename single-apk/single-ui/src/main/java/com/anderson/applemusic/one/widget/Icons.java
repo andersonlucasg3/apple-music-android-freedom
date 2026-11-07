@@ -35,6 +35,7 @@ public final class Icons {
     public static final int NOTE = 16;
     public static final int MORE = 17;
     public static final int DOWNLOAD = 18;
+    public static final int QUEUE = 19;
 
     private static final float GRID = 24f;
 
@@ -43,7 +44,7 @@ public final class Icons {
 
     private static boolean filled(int icon) {
         return icon == PLAY || icon == PAUSE || icon == PREV || icon == NEXT
-                || icon == NOTE || icon == MORE;
+                || icon == NOTE || icon == MORE || icon == QUEUE;
     }
 
     private static Path build(int icon) {
@@ -166,6 +167,18 @@ public final class Icons {
                 path.lineTo(16.6f, 10.8f);
                 path.moveTo(5.2f, 19.4f);
                 path.lineTo(18.8f, 19.4f);
+                break;
+            case QUEUE:
+                path.addRoundRect(new RectF(4.2f, 5.4f, 13.6f, 7f), 0.8f, 0.8f,
+                        Path.Direction.CW);
+                path.addRoundRect(new RectF(4.2f, 11.2f, 13.6f, 12.8f), 0.8f, 0.8f,
+                        Path.Direction.CW);
+                path.addRoundRect(new RectF(4.2f, 17f, 13.6f, 18.6f), 0.8f, 0.8f,
+                        Path.Direction.CW);
+                path.moveTo(16.4f, 8.6f);
+                path.lineTo(20.4f, 12f);
+                path.lineTo(16.4f, 15.4f);
+                path.close();
                 break;
             default:
                 break;

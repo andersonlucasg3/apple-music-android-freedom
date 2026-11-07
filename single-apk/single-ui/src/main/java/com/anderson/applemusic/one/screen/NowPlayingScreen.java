@@ -9,6 +9,7 @@ import android.view.ViewGroup;
 import android.widget.FrameLayout;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
+import android.widget.ScrollView;
 import android.widget.SeekBar;
 import android.widget.TextView;
 
@@ -18,16 +19,22 @@ import com.anderson.applemusic.one.theme.Inter;
 import com.anderson.applemusic.one.theme.Shapes;
 import com.anderson.applemusic.one.theme.Tokens;
 import com.anderson.applemusic.one.widget.CircleButton;
+import com.anderson.applemusic.one.widget.Focus;
 import com.anderson.applemusic.one.widget.Icons;
 import com.anderson.applemusic.one.widget.Pill;
+import com.anderson.applemusic.one.widget.TrackRow;
 
+import java.util.List;
 import java.util.Locale;
 
 /**
  * Full-screen player: dark gradient derived from the cover's dominant colour, large
  * artwork, title/artist/album, seek bar with both times, circular transport controls
- * (prev 60 / play 80 / next 60) and the "Criar Estação"/"Ações" actions. On TV and the
- * head unit it lays out side by side like the car-app; on a phone it stacks.
+ * (prev 60 / play 80 / next 60), the "Criar Estação"/"Ações" actions and the queue.
+ *
+ * <p>"Fila" opens the session queue ({@code MediaController.getQueue()}) as a sheet of
+ * track rows with the current one highlighted; tapping a row calls
+ * {@code skipToQueueItem}. The pill is hidden when the session has no queue.
  */
 public final class NowPlayingScreen {
 
@@ -45,9 +52,19 @@ public final class NowPlayingScreen {
     private final SeekBar seek;
     private final CircleButton play;
     private final Pill station;
+    private final Pill queue;
+    private final LinearLayout extras;
+    private final FrameLayout queuePanel;
+    private final LinearLayout queueRows;
+    private final TextView queueCount;
     private MediaClient.Snapshot latest = new MediaClient.Snapshot();
     private int lastArtworkHash;
     private boolean seekTracking;
+
+    /** Structural signature of the queue currently rendered in the sheet. */
+    private int queueSize = -1;
+    private long queueFirstId = Long.MIN_VALUE;
+    private long queueLastId = Long.MIN_VALUE;
 
     public NowPlayingScreen(Context context, ScreenHost host) {
         this.context = context;
@@ -166,13 +183,29 @@ public final class NowPlayingScreen {
 
         station = Pill.surface(context, Icons.PLUS, "Criar Estação");
         station.setTextColor(Tokens.ACCENT);
-        station.setVisibility(View.GONE);
         station.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {
                 host.createStation();
             }
         });
+        queue = Pill.surface(context, Icons.QUEUE, "Fila");
+        queue.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                openQueue();
+            }
+        });
+
+        extras = new LinearLayout(context);
+        extras.setOrientation(LinearLayout.HORIZONTAL);
+        extras.setGravity(Gravity.CENTER);
+        LinearLayout.LayoutParams stationParams = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        stationParams.rightMargin = Tokens.dp(10);
+        extras.addView(station, stationParams);
+        extras.addView(queue, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
 
         if (Tokens.wide()) {
             buildWide(page, previous, next);
@@ -182,6 +215,13 @@ public final class NowPlayingScreen {
         linkFocus(close, previous, next, actions);
 
         root.addView(page, new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+
+        queueRows = new LinearLayout(context);
+        queueRows.setOrientation(LinearLayout.VERTICAL);
+        queueCount = Inter.text(context, "", Tokens.CAPTION, Inter.REGULAR, Tokens.TEXT_DIM);
+        queuePanel = buildQueuePanel();
+        root.addView(queuePanel, new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
     }
 
@@ -220,11 +260,11 @@ public final class NowPlayingScreen {
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
         detail.addView(buildControls(previous, next), new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
-        LinearLayout.LayoutParams stationParams = new LinearLayout.LayoutParams(
+        LinearLayout.LayoutParams extrasParams = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        stationParams.gravity = Gravity.CENTER_HORIZONTAL;
-        stationParams.topMargin = Tokens.dp(14);
-        detail.addView(station, stationParams);
+        extrasParams.gravity = Gravity.CENTER_HORIZONTAL;
+        extrasParams.topMargin = Tokens.dp(14);
+        detail.addView(extras, extrasParams);
     }
 
     private void buildNarrow(LinearLayout page, CircleButton previous, CircleButton next) {
@@ -260,11 +300,145 @@ public final class NowPlayingScreen {
         body.addView(buildProgress(), progressParams);
         body.addView(buildControls(previous, next), new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
-        LinearLayout.LayoutParams stationParams = new LinearLayout.LayoutParams(
+        LinearLayout.LayoutParams extrasParams = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        stationParams.gravity = Gravity.CENTER_HORIZONTAL;
-        stationParams.topMargin = Tokens.dp(10);
-        body.addView(station, stationParams);
+        extrasParams.gravity = Gravity.CENTER_HORIZONTAL;
+        extrasParams.topMargin = Tokens.dp(10);
+        body.addView(extras, extrasParams);
+    }
+
+    /**
+     * "A seguir" sheet: the session queue as track rows, the current one in accent. Tapping
+     * a row asks the session to jump there and the sheet stays open (the highlight moves).
+     */
+    private FrameLayout buildQueuePanel() {
+        FrameLayout panel = new FrameLayout(context);
+        panel.setBackgroundColor(0xD9000000);
+        panel.setClickable(true);
+
+        LinearLayout sheet = new LinearLayout(context);
+        sheet.setOrientation(LinearLayout.VERTICAL);
+        sheet.setPadding(Tokens.dp(20), Tokens.dp(8), Tokens.dp(20), Tokens.dp(14));
+        sheet.setBackground(Shapes.rounded(Tokens.SURFACE, Tokens.RADIUS_SHEET));
+        sheet.setClickable(true);
+        Shapes.clip(sheet, Tokens.RADIUS_SHEET);
+
+        View grabber = new View(context);
+        grabber.setBackground(Shapes.rounded(Tokens.TRACK, 2f));
+        LinearLayout.LayoutParams grabberParams =
+                new LinearLayout.LayoutParams(Tokens.dp(40), Tokens.dp(4));
+        grabberParams.gravity = Gravity.CENTER_HORIZONTAL;
+        grabberParams.topMargin = Tokens.dp(4);
+        grabberParams.bottomMargin = Tokens.dp(14);
+        sheet.addView(grabber, grabberParams);
+
+        LinearLayout headingRow = new LinearLayout(context);
+        headingRow.setOrientation(LinearLayout.HORIZONTAL);
+        headingRow.setGravity(Gravity.CENTER_VERTICAL);
+        TextView heading = Inter.text(context, "A seguir", Tokens.SECTION, Inter.BOLD,
+                Tokens.TEXT);
+        headingRow.addView(heading, new LinearLayout.LayoutParams(0,
+                ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+        headingRow.addView(queueCount);
+        LinearLayout.LayoutParams headingParams = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        headingParams.bottomMargin = Tokens.dp(10);
+        sheet.addView(headingRow, headingParams);
+
+        ScrollView scroll = new ScrollView(context);
+        scroll.setVerticalScrollBarEnabled(false);
+        scroll.addView(queueRows);
+        sheet.addView(scroll, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
+
+        TextView close = Inter.text(context, "Fechar", 13f, Inter.SEMIBOLD, Tokens.TEXT_DIM);
+        close.setGravity(Gravity.CENTER);
+        close.setMinHeight(Tokens.dp(44));
+        Focus.attach(close, Tokens.RADIUS_PILL, 0x00000000, Tokens.SURFACE_HOVER, null);
+        close.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                closeQueue();
+            }
+        });
+        LinearLayout.LayoutParams closeParams = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        closeParams.gravity = Gravity.CENTER_HORIZONTAL;
+        closeParams.topMargin = Tokens.dp(6);
+        sheet.addView(close, closeParams);
+
+        int width = Math.min(Tokens.dp(560), Math.round(Tokens.screenWidth() * 0.86f));
+        int height = Math.round(context.getResources().getDisplayMetrics().heightPixels * 0.72f);
+        sheet.setLayoutParams(new FrameLayout.LayoutParams(width, height, Gravity.CENTER));
+        panel.addView(sheet);
+
+        panel.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                closeQueue();
+            }
+        });
+        sheet.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                // Consume: taps inside the sheet must not close it.
+            }
+        });
+        panel.setVisibility(View.GONE);
+        return panel;
+    }
+
+    private void openQueue() {
+        if (latest.queue.isEmpty()) return;
+        refreshQueue(latest);
+        queuePanel.setVisibility(View.VISIBLE);
+        queuePanel.setAlpha(0f);
+        queuePanel.animate().alpha(1f).setDuration(140L).start();
+        int active = Math.max(0, latest.activeQueueIndex());
+        View row = queueRows.getChildAt(active);
+        if (row != null) row.requestFocus();
+    }
+
+    public void closeQueue() {
+        queuePanel.setVisibility(View.GONE);
+    }
+
+    public boolean isQueueOpen() {
+        return queuePanel.getVisibility() == View.VISIBLE;
+    }
+
+    /** Rebuilds the sheet rows only when the queue changed; updates the highlight always. */
+    private void refreshQueue(MediaClient.Snapshot snapshot) {
+        List<MediaClient.QueueEntry> entries = snapshot.queue;
+        long first = entries.isEmpty() ? Long.MIN_VALUE : entries.get(0).queueId;
+        long last = entries.isEmpty() ? Long.MIN_VALUE : entries.get(entries.size() - 1).queueId;
+        if (entries.size() != queueSize || first != queueFirstId || last != queueLastId) {
+            queueSize = entries.size();
+            queueFirstId = first;
+            queueLastId = last;
+            queueRows.removeAllViews();
+            for (int i = 0; i < entries.size(); i++) {
+                final MediaClient.QueueEntry entry = entries.get(i);
+                TrackRow row = new TrackRow(context, i + 1, entry.title, entry.subtitle);
+                row.setOnClickListener(new View.OnClickListener() {
+                    @Override
+                    public void onClick(View v) {
+                        host.skipToQueue(entry.queueId);
+                    }
+                });
+                LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(
+                        ViewGroup.LayoutParams.MATCH_PARENT,
+                        ViewGroup.LayoutParams.WRAP_CONTENT);
+                params.bottomMargin = Tokens.dp(2);
+                queueRows.addView(row, params);
+            }
+        }
+        queueCount.setText(entries.size() + " faixas");
+        int active = snapshot.activeQueueIndex();
+        for (int i = 0; i < queueRows.getChildCount(); i++) {
+            View child = queueRows.getChildAt(i);
+            if (child instanceof TrackRow) ((TrackRow) child).setPlaying(i == active);
+        }
     }
 
     private View buildProgress() {
@@ -321,6 +495,7 @@ public final class NowPlayingScreen {
         actions.setId(actionsId);
         seek.setId(View.generateViewId());
         station.setId(View.generateViewId());
+        queue.setId(View.generateViewId());
 
         close.setNextFocusDownId(previousId);
         close.setNextFocusRightId(actionsId);
@@ -334,6 +509,9 @@ public final class NowPlayingScreen {
         seek.setNextFocusUpId(playId);
         seek.setNextFocusDownId(station.getId());
         station.setNextFocusUpId(seek.getId());
+        station.setNextFocusRightId(queue.getId());
+        queue.setNextFocusLeftId(station.getId());
+        queue.setNextFocusUpId(seek.getId());
     }
 
     public View view() {
@@ -357,6 +535,10 @@ public final class NowPlayingScreen {
         play.setIcon(snapshot.playing ? Icons.PAUSE : Icons.PLAY);
         station.setVisibility(snapshot.findActionEndingWith(STATION) != null
                 ? View.VISIBLE : View.GONE);
+        queue.setVisibility(snapshot.queue.isEmpty() ? View.GONE : View.VISIBLE);
+        extras.setVisibility(station.getVisibility() == View.VISIBLE
+                || queue.getVisibility() == View.VISIBLE ? View.VISIBLE : View.GONE);
+        if (isQueueOpen()) refreshQueue(snapshot);
         if (!seekTracking) {
             int progress = snapshot.durationMs > 0L
                     ? (int) (snapshot.positionMs * 1000L / snapshot.durationMs) : 0;
@@ -371,6 +553,7 @@ public final class NowPlayingScreen {
     }
 
     public void close() {
+        closeQueue();
         root.setVisibility(View.GONE);
     }
 

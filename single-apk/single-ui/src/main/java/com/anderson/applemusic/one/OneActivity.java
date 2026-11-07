@@ -542,6 +542,25 @@ public final class OneActivity extends Activity
     }
 
     @Override
+    public void playCollectionFrom(String collectionId, String label, int index,
+                                   MediaClient.Item track) {
+        if (collectionId == null) return;
+        client.playCollectionFrom(collectionId, index, track == null ? null : track.id);
+        setStatus(index <= 0 ? "Tocando " + label
+                : "Tocando " + label + " · faixa " + (index + 1));
+    }
+
+    @Override
+    public void skipToQueue(long queueId) {
+        client.skipToQueueItem(queueId);
+    }
+
+    @Override
+    public MediaClient.Snapshot nowPlaying() {
+        return latest;
+    }
+
+    @Override
     public void togglePlayPause() {
         client.togglePlayPause();
     }
@@ -700,6 +719,8 @@ public final class OneActivity extends Activity
         if (playerScreen.view().getVisibility() == View.VISIBLE) {
             playerScreen.update(snapshot);
         }
+        if (tabCollection != null) tabCollection.updatePlayback(snapshot);
+        if (overlayCollection != null) overlayCollection.updatePlayback(snapshot);
     }
 
     private final Runnable ticker = new Runnable() {
@@ -1050,6 +1071,10 @@ public final class OneActivity extends Activity
             return true;
         }
         if (playerScreen.view().getVisibility() == View.VISIBLE) {
+            if (playerScreen.isQueueOpen()) {
+                playerScreen.closeQueue();
+                return true;
+            }
             closePlayer();
             return true;
         }

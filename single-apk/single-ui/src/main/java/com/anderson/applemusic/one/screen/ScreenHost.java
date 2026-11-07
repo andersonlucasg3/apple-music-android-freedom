@@ -17,6 +17,15 @@ public interface ScreenHost {
 
     void playId(String mediaId, String label);
 
+    /** Plays a collection id and starts at its 0-based track {@code index}. */
+    void playCollectionFrom(String collectionId, String label, int index, MediaClient.Item track);
+
+    /** Jumps inside the session queue ({@code MediaController.skipToQueueItem}). */
+    void skipToQueue(long queueId);
+
+    /** Latest playback snapshot, for the "tocando agora" state of a freshly built list. */
+    MediaClient.Snapshot nowPlaying();
+
     void togglePlayPause();
 
     void skipNext();

@@ -21,6 +21,7 @@ import com.anderson.applemusic.one.widget.Icons;
 import com.anderson.applemusic.one.widget.ListRow;
 import com.anderson.applemusic.one.widget.Pill;
 import com.anderson.applemusic.one.widget.Skeleton;
+import com.anderson.applemusic.one.widget.TrackRow;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -46,11 +47,17 @@ public class CollectionScreen implements ChildSink {
     private final TextView titleView;
     private final TextView subtitleView;
     private final LinearLayout column;
+    private final Pill playAll;
     private final List<String> ids = new ArrayList<String>();
     private final List<String> titles = new ArrayList<String>();
+    /** Track rows of the current node, when the node is a track list, with their media ids. */
+    private final List<TrackRow> trackRows = new ArrayList<TrackRow>();
+    private final List<String> trackIds = new ArrayList<String>();
+    private final List<String> trackTitles = new ArrayList<String>();
     private Skeleton skeleton;
     private String failedId;
     private boolean exitOnRootBack;
+    private boolean trackList;
 
     public CollectionScreen(Context context, ScreenHost host, ArtworkLoader artwork, int mode,
                             int emptyIcon) {
@@ -97,6 +104,22 @@ public class CollectionScreen implements ChildSink {
         heading.addView(subtitleView);
         header.addView(heading, new LinearLayout.LayoutParams(0,
                 ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+
+        // "Tocar": plays the whole collection from the first track. Only meaningful when the
+        // node lists tracks (albums/playlists), so it stays hidden for category lists.
+        playAll = Pill.accent(context, Icons.PLAY, "Tocar");
+        playAll.setVisibility(View.GONE);
+        LinearLayout.LayoutParams playAllParams = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        playAllParams.leftMargin = Tokens.dp(12);
+        playAll.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                if (ids.isEmpty()) return;
+                host.playId(ids.get(ids.size() - 1), titles.get(titles.size() - 1));
+            }
+        });
+        header.addView(playAll, playAllParams);
 
         page.addView(header, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
@@ -164,9 +187,19 @@ public class CollectionScreen implements ChildSink {
     private void showLoading() {
         stopSkeleton();
         column.removeAllViews();
+        clearTrackRows();
+        trackList = false;
+        playAll.setVisibility(View.GONE);
         skeleton = Skeleton.rows(context, 6);
         column.addView(skeleton, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+    }
+
+    private void clearTrackRows() {
+        trackRows.clear();
+        trackIds.clear();
+        trackTitles.clear();
+        trackList = false;
     }
 
     private void stopSkeleton() {
@@ -182,6 +215,7 @@ public class CollectionScreen implements ChildSink {
         if (ids.isEmpty() || !parentId.equals(ids.get(ids.size() - 1))) return;
         stopSkeleton();
         column.removeAllViews();
+        clearTrackRows();
         if (children.isEmpty()) {
             column.addView(empty("Nada aqui",
                     "O Apple Music não retornou itens para " + titles.get(titles.size() - 1) + "."));
@@ -189,12 +223,50 @@ public class CollectionScreen implements ChildSink {
             host.status("");
             return;
         }
-        subtitleView.setText(children.size() + " itens");
+        trackList = isTrackList(parentId, children);
+        playAll.setVisibility(trackList ? View.VISIBLE : View.GONE);
+        subtitleView.setText(children.size() + (trackList ? " faixas" : " itens"));
         host.status("");
         if (mode == GRID) {
             addGrid(children);
         } else {
             addList(children);
+        }
+        updatePlayback(host.nowPlaying());
+    }
+
+    /**
+     * True when the node lists tracks rather than more collections. The engine's Auto tree
+     * marks albums/playlists as playable leaves too, so "playable and not browsable" is not
+     * enough: the node must also be the songs node or hand out bare track ids (catalogue
+     * style) instead of child browse ids.
+     */
+    private static boolean isTrackList(String parentId, List<MediaClient.Item> children) {
+        for (MediaClient.Item child : children) {
+            if (child.browsable || !child.playable) return false;
+        }
+        if (children.isEmpty()) return false;
+        if (parentId != null && parentId.contains("/songs")) return true;
+        for (MediaClient.Item child : children) {
+            for (int i = 0; i < child.id.length(); i++) {
+                if (!Character.isDigit(child.id.charAt(i))) return false;
+            }
+        }
+        return true;
+    }
+
+    /**
+     * Repaints the "tocando agora" line: the accent glyph sits on the row whose media id
+     * (or, when the queue has no media id, whose title) matches the session metadata.
+     */
+    public void updatePlayback(MediaClient.Snapshot snapshot) {
+        if (snapshot == null || trackRows.isEmpty()) return;
+        for (int i = 0; i < trackRows.size(); i++) {
+            String mediaId = trackIds.get(i);
+            boolean playing = mediaId.length() > 0
+                    ? mediaId.equals(snapshot.mediaId)
+                    : trackTitles.get(i).equalsIgnoreCase(snapshot.title);
+            trackRows.get(i).setPlaying(playing);
         }
     }
 
@@ -224,26 +296,52 @@ public class CollectionScreen implements ChildSink {
     }
 
     private void addList(List<MediaClient.Item> items) {
-        for (MediaClient.Item item : items) {
-            final MediaClient.Item target = item;
-            ListRow row = new ListRow(context, artwork, item.title, item.subtitle,
-                    item.artworkUri, item.browsable);
-            row.setOnClickListener(new View.OnClickListener() {
-                @Override
-                public void onClick(View v) {
-                    choose(target);
-                }
-            });
-            row.setOnLongClickListener(new View.OnLongClickListener() {
-                @Override
-                public boolean onLongClick(View v) {
-                    host.itemActions(target);
-                    return true;
-                }
-            });
+        final String collectionId = ids.get(ids.size() - 1);
+        final String collectionTitle = titles.get(titles.size() - 1);
+        for (int i = 0; i < items.size(); i++) {
+            final MediaClient.Item item = items.get(i);
+            final int index = i;
+            View row;
+            if (trackList) {
+                TrackRow track = new TrackRow(context, i + 1, item.title, item.subtitle);
+                track.setOnClickListener(new View.OnClickListener() {
+                    @Override
+                    public void onClick(View v) {
+                        host.playCollectionFrom(collectionId, collectionTitle, index, item);
+                    }
+                });
+                track.setOnLongClickListener(new View.OnLongClickListener() {
+                    @Override
+                    public boolean onLongClick(View v) {
+                        host.itemActions(item);
+                        return true;
+                    }
+                });
+                trackRows.add(track);
+                trackIds.add(item.id);
+                trackTitles.add(item.title);
+                row = track;
+            } else {
+                ListRow listRow = new ListRow(context, artwork, item.title, item.subtitle,
+                        item.artworkUri, item.browsable);
+                listRow.setOnClickListener(new View.OnClickListener() {
+                    @Override
+                    public void onClick(View v) {
+                        choose(item);
+                    }
+                });
+                listRow.setOnLongClickListener(new View.OnLongClickListener() {
+                    @Override
+                    public boolean onLongClick(View v) {
+                        host.itemActions(item);
+                        return true;
+                    }
+                });
+                row = listRow;
+            }
             LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(
                     ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-            params.bottomMargin = Tokens.dp(8);
+            params.bottomMargin = Tokens.dp(trackList ? 2 : 8);
             column.addView(row, params);
         }
     }

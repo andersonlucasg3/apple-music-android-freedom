@@ -209,8 +209,17 @@ Com targetSdk 36 o *predictive back* vem ligado: o sistema deixa de chamar
   de uma prateleira abre o `CollectionScreen` em overlay com o mesmo tratamento.
 - **Now Playing fullscreen**: fundo em gradiente escuro derivado da **cor dominante da
   capa** (`ColorArt`), capa grande 16 dp, título/artista/álbum, progresso com tempos,
-  prev 60 / play 80 / next 60 (play em accent), **Criar Estação** e **Ações**. Layout lado
-  a lado em TV/carro e empilhado no celular. Seek arrasta e envia `seekTo`.
+  prev 60 / play 80 / next 60 (play em accent), **Criar Estação**, **Ações** e **Fila**.
+  Layout lado a lado em TV/carro e empilhado no celular. Seek arrasta e envia `seekTo`.
+- **Fila / “A seguir”**: pill **Fila** no player (escondida quando a sessão não tem fila)
+  abre um sheet com `MediaController.getQueue()` — número, título, artista, a faixa atual
+  em accent com o glifo de play. Tocar uma linha chama
+  `skipToQueueItem(QueueItem.getQueueId())`; o sheet fica aberto e o destaque anda junto.
+  BACK com o sheet aberto fecha só o sheet.
+- **Coleções de faixas**: quando o nó lista faixas (não mais coleções), `CollectionScreen`
+  mostra **Tocar** no cabeçalho, numera as linhas e marca a que está tocando; tocar uma
+  linha toca a coleção e salta para aquela faixa. Se o engine não montar a fila a tempo,
+  cai para `playFromMediaId` da própria faixa.
 - **Ações**: sheet centrado com as `customActions`, linhas de 56 dp, bullet accent para
   “Criar Estação”, feedback (“Favorito aplicado”, “Criando estação…”) e Fechar.
 - **Mini player**: persistente em todas as telas, capa 40 dp, play/pause; toque fora do
@@ -228,6 +237,39 @@ Com targetSdk 36 o *predictive back* vem ligado: o sistema deixa de chamar
 - **Foco D-pad**: abas com contorno/pill, cards com 1.05 + contorno accent, player com
   cadeia explícita de foco, sheets com foco nas linhas; DOWN do chrome entra no conteúdo.
 
+## Fila e “começar da faixa N” (investigação no device)
+
+Medido com o engine 7.0.0 (1614) logado, em `RXCX100BZ5J` (arm64) e `emulator-5554`
+(TV x86), via `adb logcat -s AppleMusicOne` e `adb shell dumpsys media_session`:
+
+1. **Tocar uma coleção** (`playFromMediaId("__AUTO_ROOT__/library/albums/3-…")`) monta a
+   fila da coleção: `dumpsys media_session` → `queueTitle=null, size=18`, metadata da
+   faixa 1 (`Red Lights`); o log do `MediaController.getQueue()` lista os itens com
+   `QueueItem.getQueueId()`, `getDescription().getTitle()/getSubtitle()/getMediaId()` —
+   p.ex. `queue[0] id=0 media=870659635 title=Red Lights`. O engine também acrescenta
+   autoplay ao fim da fila (18 → 28 itens), então a fila é maior que o álbum.
+2. **`skipToQueueItem` funciona e o `id` é o `QueueItem.getQueueId()`**, que neste engine
+   é o índice 0..n-1 (a fila é reindexada a cada troca). Prova: `skipToQueueItem 2` →
+   metadata `Light Years Away (feat. DBX)` no celular e `Sana Corazón` na TV, com
+   `state=PLAYING` e a posição seguindo; o sheet reflete a nova ordem (o engine reordena
+   a fila para começar na faixa escolhida).
+3. **Faixa isolada**: `playFromMediaId(<id de faixa>)` também cria fila (o engine monta
+   uma fila curta, p.ex. 3 itens), mas o id da faixa não carrega o contexto do álbum.
+4. **Não existe “playFromMediaId(coleção) + extras com índice”**: o caminho do engine é
+   `PlaybackMediaIdHandler.createProviderForMediaId(String)` — só a string do media id,
+   sem `Bundle` — e `MediaSessionCallbacks` (`C3928e0`) chama `prepare(provider, index,
+   true, position)` com índice 0. Os `startItemIndex` de
+   `StorePlaybackQueueItemProvider`/`LibraryCollectionPlaybackQueueItemProvider` só são
+   preenchidos pelos builders internos, não por extras da sessão.
+5. **A árvore do Android Auto deste engine só expõe coleções**: `__AUTO_ROOT__`,
+   `__AUTO_ROOT__/library` (5 nós: Aleatória, Adições Recentes, Playlists, Artistas,
+   Álbuns) e as prateleiras do Início. Álbuns/playlists vêm como itens **tocáveis e não
+   navegáveis** (`browsable=false, playable=true`) — ou seja, não há nó de faixas para
+   abrir. Por isso o caminho “tocar a coleção e pular para a faixa N” do
+   `CollectionScreen` só se ativa num nó de faixas (`/songs` ou itens com id de faixa);
+   hoje o “começar daqui” que o engine suporta é o da **fila** (Tocar o álbum/playlist →
+   Player → Fila → escolher a faixa), validado acima.
+
 ## Validado
 
 | Device | Resultado |
@@ -235,6 +277,8 @@ Com targetSdk 36 o *predictive back* vem ligado: o sistema deixa de chamar
 | `RXCX100BZ5J` (arm64, API 36, toque) | Instala por cima do engine logado. Home com hero/prateleiras/“Ver tudo”; toque em card toca (mini player aparece); mini → player cheio com gradiente da capa, tempos e controles; seek atualiza a posição (0:03 → 3:08); Ações abre o sheet e envia **Favorito** (`sendCustomAction ...FAVORITE`); Rádio em grade e Biblioteca em lista com drill-down; busca `daft` HTTP 200 (18 resultados) e resultado tocável; painel de Conta renderiza (login oficial não re-exercitado nesta rodada); BACK fecha ações/player/busca e mantém a activity (predictive back); `logcat -b crash` vazio. |
 | `emulator-5554` (TV x86, 1080p, D-pad) | Instala por cima. Barra de apps em uma linha com Buscar/Conta/Atualizações rotulados; DOWN da aba foca a hero (contorno accent), DOWN foca o card (1.05 + contorno), ENTER toca; mini player com foco próprio (DOWN de card → mini); ENTER abre o player cheio lado a lado; Ações abre o sheet e envia **Criar Estação**; BACK fecha sheet e depois o player sem sair; Rádio em grade e Biblioteca em lista (ícone substituto quando o nó não tem capa); busca `daft` HTTP 200 (18 resultados) digitada pelo IME/`input text`; Atualizações mostra `1.9.0 (10900)` + engine `7.0.0 (1614)` e “Sem atualização”; `logcat -b crash` vazio. |
 | `arm32` | APK gerado e assinado; não havia device arm32/carro online nesta rodada. |
+| `RXCX100BZ5J` (arm64, 1.9.2, fila) | Instalado por cima. Álbuns continuam como lista de coleções (“281 itens”, sem numeração — sem regressão); tocar um álbum toca a coleção (`queue size=18` → 28 com autoplay); **Fila** aparece no player em “Ale/Trance Life”; o sheet “A seguir” lista 28 faixas com a atual em accent; tocar a 3ª (`skipToQueueItem 2`) mudou a metadata para `Light Years Away (feat. DBX)` e `state=PLAYING` continuou; o sheet refez o destaque; BACK fecha o sheet; `logcat -b crash` vazio. |
+| `emulator-5554` (TV x86, 1.9.2, fila) | Instalado por cima. Álbum `Trance Life` tocando (0:05 → 0:16), pill **Fila** no layout lado a lado; sheet “A seguir” com 18 faixas; tocar a 3ª (`skipToQueueItem 2`) → metadata `Sana Corazón` com `state=PLAYING` e a fila reindexada; BACK fecha só o sheet, player continua; `logcat -b crash` vazio. |
 
 Evidências lado a lado com as referências dos companions
 (`.pipeline/revamp-tv/`, `.pipeline/revamp-car/` e as fotos de celular em
@@ -260,6 +304,13 @@ Extras da mesma rodada: `revamp-one-tv-home-focus.png` e
 `revamp-one-tv-action-station.png` (feedback de Criar Estação),
 `revamp-one-phone-home-playing.png` (mini player), `revamp-one-phone-seek.png`
 (seek) e `revamp-one-phone-account.png` (painel de conta).
+
+Fila (1.9.2): `queue-02-player.png` e `queue-11-tv-player.png` (pill **Fila** no celular
+e na TV), `queue-03-panel.png` e `queue-12-tv-panel.png` (“A seguir” com a faixa atual em
+accent), `queue-04-skipped.png` e `queue-13-tv-skipped.png` (depois do
+`skipToQueueItem 2`: destaque na faixa 3 e fila reindexada), `queue-05-playing.png`,
+`queue-06-resumed.png` e `queue-14-tv-back.png` (reprodução seguindo depois do salto),
+`queue-01-albums.png` (lista de álbuns sem numeração/“Tocar”).
 
 ## Limitações / P1
 
