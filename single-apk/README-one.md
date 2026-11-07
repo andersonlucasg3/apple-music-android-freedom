@@ -192,6 +192,34 @@ após o login) e reassina `__AUTO_ROOT__`. O `MediaClient.disconnect()` descarta
 callbacks, então nada velho é reentregue; se o catálogo vier vazio/erro (serviço ainda
 subindo), a UI reconecta até 4× antes de desistir.
 
+### Painel de Conta: perfil logado x convite deslogado
+
+`AccountScreen` lê o estado da conta do próprio engine, sem classes do engine no nosso
+dex (`media/AccountSession.java`):
+
+- **Sessão**: `files/AccountTable.json` (StoreApi/Gson) tem `accounts[]` + `activeAccount`;
+  um item ativo com `dsid != 0` é a sessão logada — o mesmo critério do
+  `AccountStore.isLoggedIn()`. O arquivo é lido a cada `open()`, então voltar do login já
+  mostra a conta nova.
+- **Perfil**: `firstName`/`lastName` (ou o Apple ID `id` como fallback) e o `id` viram
+  nome e e-mail; a inicial do nome vira o avatar.
+- **Assinatura**: `files/datastore/settings.preferences_pb`, chaves
+  `subscription_status` (`ENABLED`/`DISABLED`/`UNLINKED`/`GLIDE`),
+  `subscription_reason` (`INDIVIDUAL`/`FAMILY`/`MEMBER`/…), `subscription_is_family` e
+  `subscription_free_trial` — exatamente o que o `a1.i()` do engine lê. Resultado:
+  “Assinatura Individual/Família/Universitária/pela operadora”, “Teste grátis”,
+  “Assinatura em carência”, “Sem assinatura ativa” ou “Assinatura não informada”.
+- **Deslogado**: o convite e o botão “Entrar na conta Apple” continuam iguais, chamando
+  `host.openAccount()` (reflexão `S()`/`showAMSAuthWithType` já existente).
+- **Sair**: não há botão. Deslogar exige o `AccountStore.removeAccount`/`clearActive` +
+  `SignOutTask` do AMSKit; o manifest não declara activity nem deep link de sign-out, e
+  mexer nos arquivos à mão arriscaria a conta. O painel avisa que o sign-out não é feito
+  ali.
+
+Teste do estado deslogado: como o celular e o emulador estão logados, o painel foi
+renderizado deslogado com um `--ez one.signedOut true` temporário (removido antes do
+commit), sem tocar na conta; o screenshot `account-signedout-tv.png` é dessa execução.
+
 ### Voltar (BACK) no Android 15/16
 
 Com targetSdk 36 o *predictive back* vem ligado: o sistema deixa de chamar
@@ -227,8 +255,9 @@ Com targetSdk 36 o *predictive back* vem ligado: o sistema deixa de chamar
 - **Busca**: campo arredondado, resultados agrupados por tipo (Músicas/Álbuns/Artistas/
   Playlists) com capa, skeleton durante a consulta, estado vazio e estado sem conexão com
   “Tentar de novo” + fallback “Abrir a busca do Apple Music”. TV usa o IME do sistema.
-- **Conta**: painel com o botão oficial de login do Apple ID (fluxo acima) e aviso de que
-  a tela recarrega ao voltar.
+- **Conta**: com sessão ativa, mostra o **perfil** do engine (avatar com a inicial,
+  nome, Apple ID e assinatura); sem sessão, mostra o convite e o botão oficial de login
+  do Apple ID (fluxo acima). O estado é relido a cada abertura do painel.
 - **Atualizações**: painel com versão instalada (`1.9.0 (10900)`), versão do engine,
   mensagem de estado, progresso, Verificar / Baixar e instalar / Cancelar / Fechar.
   Compara `one-<abi>.versionCode`, baixa, confere SHA-256 e instala via `PackageInstaller`.
@@ -279,6 +308,8 @@ Medido com o engine 7.0.0 (1614) logado, em `RXCX100BZ5J` (arm64) e `emulator-55
 | `arm32` | APK gerado e assinado; não havia device arm32/carro online nesta rodada. |
 | `RXCX100BZ5J` (arm64, 1.9.2, fila) | Instalado por cima. Álbuns continuam como lista de coleções (“281 itens”, sem numeração — sem regressão); tocar um álbum toca a coleção (`queue size=18` → 28 com autoplay); **Fila** aparece no player em “Ale/Trance Life”; o sheet “A seguir” lista 28 faixas com a atual em accent; tocar a 3ª (`skipToQueueItem 2`) mudou a metadata para `Light Years Away (feat. DBX)` e `state=PLAYING` continuou; o sheet refez o destaque; BACK fecha o sheet; `logcat -b crash` vazio. |
 | `emulator-5554` (TV x86, 1.9.2, fila) | Instalado por cima. Álbum `Trance Life` tocando (0:05 → 0:16), pill **Fila** no layout lado a lado; sheet “A seguir” com 18 faixas; tocar a 3ª (`skipToQueueItem 2`) → metadata `Sana Corazón` com `state=PLAYING` e a fila reindexada; BACK fecha só o sheet, player continua; `logcat -b crash` vazio. |
+| `RXCX100BZ5J` (arm64, 1.9.1, conta) | Instalado por cima. Logado: painel **Conta** abre o perfil com inicial “A”, nome completo, Apple ID e **“Assinatura Individual”** (lidos de `AccountTable.json` + `settings.preferences_pb`, sem rede); `logcat` `signedIn=true accountFile=true status=ENABLED reason=INDIVIDUAL`; BACK/Fechar fecham; `logcat -b crash` vazio. |
+| `emulator-5554` (TV x86, 1.9.1, conta) | Instalado por cima. Mesmo perfil no layout TV (painel central), **“Assinatura Individual”**; estado deslogado verificado com override de teste (`one.signedOut`): convite + **Entrar na conta Apple** + Fechar, sem alterar a conta; `logcat -b crash` vazio. |
 
 Evidências lado a lado com as referências dos companions
 (`.pipeline/revamp-tv/`, `.pipeline/revamp-car/` e as fotos de celular em
@@ -298,6 +329,9 @@ Evidências lado a lado com as referências dos companions
 | Fullscreen (celular) | `revamp-one-phone-fullscreen.png` | `car-app/revamp-phone-player.png` | `revamp-one-phone-fullscreen-vs-car-app.png` |
 | Ações (celular) | `revamp-one-phone-actions.png` | `car-app/revamp-phone-home.png` | `revamp-one-phone-actions-vs-car-app.png` |
 | Busca (celular) | `revamp-one-phone-search.png` | `car-app/revamp-phone-library.png` | `revamp-one-phone-search-vs-car-app.png` |
+| Conta logada (celular) | `account-profile-phone.png` | `revamp-one-phone-account.png` (convite) | perfil em vez do convite |
+| Conta logada (TV) | `account-profile-tv.png` | `revamp-one-tv-home.png` (chrome) | painel central com perfil |
+| Conta deslogada (TV) | `account-signedout-tv.png` | `revamp-one-phone-account.png` | convite + login preservados |
 
 Extras da mesma rodada: `revamp-one-tv-home-focus.png` e
 `revamp-one-tv-card-focus.png` (foco D-pad), `revamp-one-tv-home-playing.png`,

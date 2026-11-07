@@ -285,7 +285,7 @@ public final class CatalogSearch {
      * {@code entry = { 1: key, 2: { 5: value } }}, so right after the key bytes come
      * {@code [0x12][varint len][0x2A][varint len][len bytes of value]}.
      */
-    private static String prefValue(byte[] pb, String key) {
+    static String prefValue(byte[] pb, String key) {
         byte[] needle = key.getBytes(java.nio.charset.Charset.forName("UTF-8"));
         int at = indexOf(pb, needle);
         if (at < 0) return null;
@@ -301,6 +301,21 @@ public final class CatalogSearch {
         int size = length[0];
         if (size < 0 || start + size > pb.length) return null;
         return new String(pb, start, size, java.nio.charset.Charset.forName("UTF-8"));
+    }
+
+    /** Boolean DataStore value: {@code [0x12][len][0x08][varint 0/1]}. */
+    static Boolean prefBoolean(byte[] pb, String key) {
+        byte[] needle = key.getBytes(java.nio.charset.Charset.forName("UTF-8"));
+        int at = indexOf(pb, needle);
+        if (at < 0) return null;
+        int position = at + needle.length;
+        if (position + 1 >= pb.length || (pb[position] & 0xFF) != 0x12) return null;
+        int[] next = readVarint(pb, position + 1);
+        if (next == null) return null;
+        position = next[1];
+        if (position >= pb.length || (pb[position] & 0xFF) != 0x08) return null;
+        int[] value = readVarint(pb, position + 1);
+        return value == null ? null : Boolean.valueOf(value[0] != 0);
     }
 
     private static int indexOf(byte[] haystack, byte[] needle) {
