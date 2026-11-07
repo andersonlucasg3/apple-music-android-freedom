@@ -78,4 +78,9 @@ public final class TrackRow extends LinearLayout {
         subtitle.setText(text == null ? "" : text);
         subtitle.setVisibility(text == null || text.length() == 0 ? View.GONE : View.VISIBLE);
     }
+
+    /** Marks the track a detail screen was opened for, without pretending it is playing. */
+    public void setEmphasis(boolean emphasized) {
+        if (emphasized) title.setTextColor(Tokens.ACCENT);
+    }
 }

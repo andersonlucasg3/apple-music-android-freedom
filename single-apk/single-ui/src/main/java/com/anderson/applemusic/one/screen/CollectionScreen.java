@@ -567,6 +567,20 @@ public class CollectionScreen implements ChildSink {
     private void choose(MediaClient.Item item) {
         String last = lastSegment(item.id);
         boolean library = item.id.contains("/library/");
+        // Catalogue ids (Home/Rádio shelves) open the detail stack; library ids stay in the
+        // browse tree because their persistent ids are not catalogue ids.
+        if (!library && last.startsWith("3-")) {
+            host.openAlbum(last.substring(2), item.title, item.subtitle, item.artworkUri);
+            return;
+        }
+        if (!library && last.startsWith("4-")) {
+            host.openPlaylist(last.substring(2), item.title, item.subtitle, item.artworkUri);
+            return;
+        }
+        if (!library && last.startsWith("6-")) {
+            host.openArtist(last.substring(2), item.title, item.artworkUri);
+            return;
+        }
         if (last.startsWith("3-")) {
             push(new Node(item.id, item.title, item.subtitle, ALBUM,
                     library ? null : last.substring(2)));

@@ -34,7 +34,7 @@ copiados para dentro do APK em `assets/one/` (ver **Build**).
 |---|---|---|
 | `theme/` | `Tokens`, `Inter`, `Shapes`, `ColorArt` | design tokens (cores/raios/tipo/escala), tipografia Inter via assets, `GradientDrawable` arredondado + `clipToOutline`, cor dominante da capa |
 | `widget/` | `TopBar`, `TabView`, `MiniPlayer`, `CoverCard`, `SeeAllCard`, `ShelfView`, `ListRow`, `SectionHeader`, `ActionSheet`, `EmptyState`, `Skeleton`, `Pill`, `CircleButton`, `Focus`, `Icons`, `IconView` | componentes reutilizáveis; ícones desenhados em `Path` |
-| `screen/` | `HomeScreen`, `LibraryScreen`, `RadioScreen`, `CollectionScreen`, `NowPlayingScreen`, `SearchScreen`, `UpdatesScreen`, `AccountScreen` + `ScreenHost`/`ChildSink` | telas e navegação; não há `Fragment`/AndroidX |
+| `screen/` | `HomeScreen`, `LibraryScreen`, `RadioScreen`, `CollectionScreen`, `DetailScreen`, `NowPlayingScreen`, `SearchScreen`, `UpdatesScreen`, `AccountScreen` + `ScreenHost`/`ChildSink` | telas e navegação; não há `Fragment`/AndroidX |
 | `media/` | `MediaClient`, `ArtworkLoader`, `CatalogSearch` | `MediaBrowser`/`MediaController` do engine, capas, busca na `amp-api` |
 | `one` | `OneActivity`, `UpdateManager`, `Version` | shell (activity, overlays, updater, versão gerada no build) |
 
@@ -258,6 +258,17 @@ Com targetSdk 36 o *predictive back* vem ligado: o sistema deixa de chamar
 - **Busca**: campo arredondado, resultados agrupados por tipo (Músicas/Álbuns/Artistas/
   Playlists) com capa, skeleton durante a consulta, estado vazio e estado sem conexão com
   “Tentar de novo” + fallback “Abrir a busca do Apple Music”. TV usa o IME do sistema.
+  Tocar um resultado abre o nível correspondente (artista/álbum/playlist/faixa); **longa
+  pressão** continua tocando o resultado direto.
+- **Telas de detalhe**: `DetailScreen` empilha **artista → álbum → artista → faixa** com
+  breadcrumb, botão ‹ e BACK nível a nível. Artista (arte, gêneros, todos os álbuns em
+  grade, músicas principais), álbum (capa, título, artista clicável, ano, gênero, nº de
+  faixas, gravadora/copyright, faixas com duração e **Tocar**), playlist (curador, texto,
+  faixas com duração) e faixa (artista e álbum clicáveis, duração, **Tocar**). Abrir o
+  álbum a partir de uma faixa rola e destaca aquela faixa.
+- **Detalhe a partir de qualquer ponto**: cards do Início/Rádio e “Ver tudo” com id de
+  catálogo (`3-` álbum, `4-` playlist, `6-` artista) abrem a tela de detalhe; itens de
+  biblioteca (persistentId, sem catálogo) continuam no browse e estações (`9-`) tocam.
 - **Conta**: com sessão ativa, mostra o **perfil** do engine (avatar com a inicial,
   nome, Apple ID e assinatura); sem sessão, mostra o convite e o botão oficial de login
   do Apple ID (fluxo acima). O estado é relido a cada abertura do painel.
@@ -360,14 +371,42 @@ device (`br`/`pt-BR` no celular, `us`/`en-US` na TV).
 
 - id `.../artists/6-…`, `.../albums/3-…` ou `.../playlists/4-…` sob `/library` → desce um
   nível (artista assina o nó, álbum/playlist vai para a amp-api);
-- id de catálogo vindo do Início (`3-<catalogId>`, `4-pl.…`) → usa o id direto, sem busca
-  por nome;
+- id de catálogo (`3-<catalogId>`, `4-pl.…`, `6-<artistId>`) fora de `/library` → abre o
+  `DetailScreen` pelo id direto, sem busca por nome;
 - **Tocar** toca a coleção inteira: `playFromMediaId(<id de catálogo>)` monta a fila do
   álbum/playlist;
 - tocar a faixa N chama `playFromMediaId(<álbum/playlist>)` + `skipToQueueItem(N-1)`
   (índice da lista = índice da fila), e a linha em reprodução fica em accent;
 - “Ver tudo” das prateleiras e a Biblioteca/Rádio continuam usando o mesmo componente, com
   breadcrumb, voltar e skeleton; cada nível novo começa no topo da lista.
+
+### Telas de detalhe (1.9.4)
+
+Medido no device (engine 7.0.0, lojas `br`/`pt-BR` e `us`/`en-US`) com as mesmas chamadas
+que o código faz hoje. Todas devolvem **HTTP 200** e os campos abaixo em `attributes`:
+
+| Tela | Endpoint | Shape medido |
+|---|---|---|
+| artista | `/v1/catalog/{sf}/artists/{id}?include=albums&limit[albums]=50` | `name`, `genreNames[]`, `artwork.url`; `relationships.albums.data[]` **com atributos completos** (`name`, `artistName`, `artwork`, `releaseDate`, `trackCount`) — Angra `192030844` → 27 álbuns |
+| músicas principais | `/v1/catalog/{sf}/artists/{id}/view/top-songs?limit=10` | `data[]` de `songs` com `name`, `artistName`, `albumName`, `durationInMillis`, `trackNumber`, `artwork` |
+| álbum | `/v1/catalog/{sf}/albums/{id}?include=tracks,artists&limit[tracks]=100` | `name`, `artistName`, `releaseDate`, `genreNames[]`, `trackCount`, `copyright`, `recordLabel`, `artwork`; `relationships.tracks.data[]` com `durationInMillis`, `trackNumber`, `discNumber`, `albumName`; `relationships.artists.data[0].id/name` — Rebirth `1689475163` → 10 faixas |
+| faixa | `/v1/catalog/{sf}/songs/{id}?include=albums,artists` | `name`, `artistName`, `albumName`, `durationInMillis`, `artwork`; `relationships.albums.data[0].id/name`, `relationships.artists.data[0].id` |
+| playlist | `/v1/catalog/{sf}/playlists/{id}?include=tracks&limit[tracks]=100` | `name`, `curatorName`, `editorialNotes.short`, `artwork`; `tracks.data[]` com `durationInMillis`/`trackNumber` |
+
+- `include=albums,songs` devolve **HTTP 400** (`limit[songs]` máximo 20); as músicas vêm
+  da view `top-songs`, cujo `data[]` só traz ids/`href` quando pedida como
+  `?views=top-songs` — por isso o endpoint `/view/top-songs` (com atributos) é o usado.
+- **Artista não tem coleção tocável**: `playFromMediaId(<artistId>)` e
+  `playFromMediaId(ra.<artistId>)` não montam fila (sessão continua `state=NONE`), então a
+  tela de artista **não** mostra “Tocar”; cada álbum (e a faixa principal) abre/ toca pelo
+  id de catálogo. É a degradação explícita para o único nível sem “tocar tudo”.
+- A pilha é do `DetailScreen` (não do browse): tocar o artista dentro do álbum empilha
+  outro nível, e o BACK percorre exatamente o caminho seguido. `OneActivity` hospeda o
+  `detailHost` acima de busca/coleção; no D-pad os descendentes das telas de baixo ficam
+  bloqueados enquanto o detalhe está aberto, e o foco começa no ‹.
+- O overlay continua usando os mesmos componentes (`CoverCard` na grade de álbuns,
+  `TrackRow` + `setEmphasis` para a faixa em foco, `SectionHeader`, `Pill`, `Skeleton`,
+  `EmptyState`); falha de um nível mostra `EmptyState` + “Tentar de novo”.
 
 ## Validado
 
@@ -382,6 +421,8 @@ device (`br`/`pt-BR` no celular, `us`/`en-US` na TV).
 | `emulator-5554` (TV x86, 1.9.1, conta) | Instalado por cima. Mesmo perfil no layout TV (painel central), **“Assinatura Individual”**; estado deslogado verificado com override de teste (`one.signedOut`): convite + **Entrar na conta Apple** + Fechar, sem alterar a conta; `logcat -b crash` vazio. |
 | `RXCX100BZ5J` (arm64, 1.9.3, navegação) | Instalado por cima. **Biblioteca → Artistas** (93) → **Angra** (2 álbuns, capas do engine) → **Aqua** (10 faixas da amp-api, `amp-api HTTP 200 /br/albums/1704078587`) → **Tocar** = `playFromMediaId 1704078587`, `queue size=10` (20 com autoplay), metadata `Viderunt Te Aquae`; tocar a 3ª (`skipToQueueItem 2`) → `Awake from Darkness`, `state=PLAYING`, linha em accent; **Playlists** (18) → **Backstreet Boys: essenciais** (22 faixas) → Tocar = `playFromMediaId pl.331a…`, `queue size=22`; 3ª faixa (`skipToQueueItem 2`) → `Quit Playing Games (With My Heart)`, `PLAYING`; playlist de usuário **Músicas favoritas** degrada (“Faixas indisponíveis”) e **Tocar** toca pelo id de browse (`queue size=4`); BACK volta nível a nível; `logcat -b crash` vazio. |
 | `emulator-5554` (TV x86, 1.9.3, navegação) | Instalado por cima. Biblioteca → **Artists** (93, títulos em inglês na TV) → **Avenged Sevenfold** (9 álbuns) → **Hail to the King (Deluxe Version)** (12 faixas; id de catálogo US `672046420` resolvido pelo título base) → **Tocar** = `queue size=12` (22), metadata `Shepherd of Fire`; 3ª (`Doing Time`, `skipToQueueItem 2`) → `PLAYING`; **Playlists** → **Backstreet Boys Essentials** (22 faixas) → Tocar = `queue size=22`; 3ª (`Quit Playing Games (With My Heart)`) → `PLAYING`; lista sempre começa na faixa 1 (scroll reset); `logcat -b crash` vazio. |
+| `RXCX100BZ5J` (arm64, 1.9.4, detalhes) | Instalado por cima. Busca **Angra** (18 resultados; artista agora com gênero “Metal”, sem `["Metal"]`) → **artista** `HTTP 200 /br/artists/192030844?include=albums&limit[albums]=50` (27 álbuns) + `/view/top-songs` (10, com álbum e duração) → **Rebirth** `HTTP 200 /br/albums/1689475163?include=tracks,artists` (ano 2001, 10 faixas, Hard rock, gravadora/copyright, durações) → **Tocar** = `playFromMediaId 1689475163`, `queue size=10` (20), metadata `In Excelsis`; 3ª faixa (`skipToQueueItem 2`) → `Millennium Sun`, linha em accent; link **Angra** no álbum → `Artista` com breadcrumb `Rebirth › Angra`; BACK volta álbum → artista → busca; **faixa** `Wuthering Heights` (`/br/songs/1689467014?include=albums,artists`) com links Artista/Álbum e **Tocar**; o link do álbum abre em `Angels Cry` rolando/destacando a faixa 7; **playlist** `Angra: essenciais` (`pl.e095…`, 25 faixas com duração); card do Início abre **álbum** (`Stone Sour`); longa pressão em resultado toca (`Carry On`, `queue size=18/1/11`, metadata atualizada); `logcat -b crash` vazio. |
+| `emulator-5554` (TV x86, 1.9.4, detalhes/D-pad) | Instalado por cima. D-pad: ENTER na hero → playlist detail, foco no **‹** (contorno accent); DOWN → faixa 1 focada, ENTER = `playFromMediaId pl.095…`, `queue size=50` (60), metadata `Midnight Sun`; BACK fecha o detalhe e devolve o foco à aba Início; telas de baixo com foco bloqueado enquanto o overlay está aberto. Busca `Angra` na loja US (19 resultados) → **artista** (27 álbuns, grade de 5) → **Rebirth** (breadcrumb `Angra › Rebirth`, 10 faixas com duração); `logcat -b crash` vazio. |
 
 Evidências lado a lado com as referências dos companions
 (`.pipeline/revamp-tv/`, `.pipeline/revamp-car/` e as fotos de celular em
@@ -426,6 +467,17 @@ sem catálogo, com Tocar), `nav-tv-01-artist-albums.png`, `nav-tv-02-album-track
 `nav-tv-03-third-track.png`, `nav-tv-04-playlist-tracks.png` e
 `nav-tv-05-playlist-third.png` (mesmos níveis na TV).
 
+Detalhes (1.9.4): `detail-00-home.png`, `detail-01-search.png` (busca Angra com
+chevron), `detail-02-song.png` (faixa: artista/álbum/duração/Tocar),
+`detail-03-song-album-focus.png` (álbum aberto pela faixa, rolando até ela),
+`detail-04-artist.png` (artista: arte, gêneros, 27 álbuns), `detail-05-artist-topsongs.png`
+(músicas principais com álbum e duração), `detail-06-artist-album-artist.png` (breadcrumb
+`Angra › Make Believe › Angra`), `detail-07-back-album.png`, `detail-08-back-artist.png` e
+`detail-09-back-search.png` (BACK nível a nível), `detail-10-playlist.png` (curador, texto,
+faixas com duração), `detail-11-home-card.png` (card do Início → álbum),
+`detail-12-tv-home-card.png` (playlist na TV), `detail-13-tv-dpad-focus.png` (faixa focada
+no D-pad), `detail-14-tv-artist.png` e `detail-15-tv-album.png` (artista/álbum na TV).
+
 ## Limitações / P1
 
 - **Sem blur real**: o fundo do player é um gradiente escuro da cor dominante da capa
@@ -437,6 +489,10 @@ sem catálogo, com Tocar), `nav-tv-01-artist-albums.png`, `nav-tv-02-album-track
   exercitado ponta a ponta (não há release com `one-*`); o caminho “sem atualização”
   (parsing do `updates.json` real) foi validado nos dois devices, agora mostrando
   `1.9.0 (10900)`.
+- **“Tocar tudo” no artista não existe**: a amp-api devolve álbuns e músicas principais,
+  mas não uma coleção tocável, e o engine não monta fila para id de artista (testado com
+  `playFromMediaId(192030844)` e `ra.192030844`: sessão continua `state=NONE`). O artista
+  fica sem o pill **Tocar**; cada álbum e cada faixa principal continuam tocando.
 - **`one-x86`** não é publicado pelo CI (só arm32/arm64); o build local gera para o
   emulador.
 - **Login**: o diálogo AMS é hospedado pela `MainActivity` do engine; a UI o fecha

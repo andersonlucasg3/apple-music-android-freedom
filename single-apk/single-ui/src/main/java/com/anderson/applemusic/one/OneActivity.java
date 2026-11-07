@@ -28,6 +28,7 @@ import com.anderson.applemusic.one.media.MediaClient;
 import com.anderson.applemusic.one.screen.AccountScreen;
 import com.anderson.applemusic.one.screen.ChildSink;
 import com.anderson.applemusic.one.screen.CollectionScreen;
+import com.anderson.applemusic.one.screen.DetailScreen;
 import com.anderson.applemusic.one.screen.HomeScreen;
 import com.anderson.applemusic.one.screen.LibraryScreen;
 import com.anderson.applemusic.one.screen.NowPlayingScreen;
@@ -121,6 +122,8 @@ public final class OneActivity extends Activity
     private CollectionScreen tabCollection;
     private FrameLayout collectionHost;
     private CollectionScreen overlayCollection;
+    private FrameLayout detailHost;
+    private DetailScreen detailScreen;
 
     private NowPlayingScreen playerScreen;
     private SearchScreen searchScreen;
@@ -194,6 +197,7 @@ public final class OneActivity extends Activity
         topBar.setTabs(new String[0], -1);
         selectedTab = -1;
         closeCollectionOverlay();
+        closeDetailOverlay();
         setStatus("");
     }
 
@@ -272,6 +276,14 @@ public final class OneActivity extends Activity
 
         searchScreen = new SearchScreen(this, this, artwork, catalog);
         rootFrame.addView(searchScreen.view(), new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+
+        // Catalogue detail stack, above search and the collection browser so opening an
+        // artist/album from either one keeps that screen underneath for BACK.
+        detailHost = new FrameLayout(this);
+        detailHost.setBackgroundColor(Tokens.BG);
+        detailHost.setVisibility(View.GONE);
+        rootFrame.addView(detailHost, new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
 
         miniPlayer = new MiniPlayer(this, new MiniPlayer.Listener() {
@@ -622,6 +634,90 @@ public final class OneActivity extends Activity
     }
 
     @Override
+    public void openArtist(String id, String name, String artworkUrl) {
+        openDetail(DetailScreen.ARTIST, id, name, "", artworkUrl);
+    }
+
+    @Override
+    public void openAlbum(String id, String title, String artist, String artworkUrl) {
+        openDetail(DetailScreen.ALBUM, id, title, artist, artworkUrl);
+    }
+
+    @Override
+    public void openPlaylist(String id, String title, String curator, String artworkUrl) {
+        openDetail(DetailScreen.PLAYLIST, id, title, curator, artworkUrl);
+    }
+
+    @Override
+    public void openSong(String id, String title, String artist, String artworkUrl) {
+        openDetail(DetailScreen.SONG, id, title, artist, artworkUrl);
+    }
+
+    private void openDetail(int kind, String id, String title, String subtitle,
+                            String artworkUrl) {
+        if (id == null || id.length() == 0) {
+            setStatus("Item sem id de catálogo");
+            return;
+        }
+        closeDetailOverlay();
+        detailScreen = new DetailScreen(this, this, artwork, catalog);
+        detailHost.removeAllViews();
+        detailHost.addView(detailScreen.view(), new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+        detailScreen.setExitOnRootBack(true);
+        detailHost.setVisibility(View.VISIBLE);
+        setDetailFocus(true);
+        switch (kind) {
+            case DetailScreen.ARTIST:
+                detailScreen.openArtist(id, title, artworkUrl);
+                break;
+            case DetailScreen.ALBUM:
+                detailScreen.openAlbum(id, title, subtitle, artworkUrl);
+                break;
+            case DetailScreen.PLAYLIST:
+                detailScreen.openPlaylist(id, title, subtitle, artworkUrl);
+                break;
+            default:
+                detailScreen.openSong(id, title, subtitle, artworkUrl);
+                break;
+        }
+        setStatus("");
+    }
+
+    @Override
+    public void closeDetail() {
+        closeDetailOverlay();
+        if (!hasTouch) focusSelectedTab();
+    }
+
+    private void closeDetailOverlay() {
+        if (detailScreen != null) {
+            detailScreen.dispose();
+            detailScreen = null;
+        }
+        if (detailHost != null) {
+            detailHost.removeAllViews();
+            detailHost.setVisibility(View.GONE);
+        }
+        setDetailFocus(false);
+    }
+
+    /**
+     * The detail stack is an overlay over the tabs/search/collection browser; on TV the
+     * D-pad must not walk into those hidden screens, so their descendants are blocked
+     * while the overlay is on top (and unblocked when it closes).
+     */
+    private void setDetailFocus(boolean detailOpen) {
+        int mode = detailOpen ? ViewGroup.FOCUS_BLOCK_DESCENDANTS
+                : ViewGroup.FOCUS_AFTER_DESCENDANTS;
+        if (base != null) base.setDescendantFocusability(mode);
+        if (collectionHost != null) collectionHost.setDescendantFocusability(mode);
+        if (searchScreen != null) {
+            ((ViewGroup) searchScreen.view()).setDescendantFocusability(mode);
+        }
+    }
+
+    @Override
     public void sessionActions() {
         showActions("Ações", latest.title, null);
     }
@@ -721,6 +817,7 @@ public final class OneActivity extends Activity
         }
         if (tabCollection != null) tabCollection.updatePlayback(snapshot);
         if (overlayCollection != null) overlayCollection.updatePlayback(snapshot);
+        if (detailScreen != null) detailScreen.updatePlayback(snapshot);
     }
 
     private final Runnable ticker = new Runnable() {
@@ -1066,16 +1163,21 @@ public final class OneActivity extends Activity
             closeAccount();
             return true;
         }
-        if (searchScreen.isOpen()) {
-            closeSearch();
-            return true;
-        }
         if (playerScreen.view().getVisibility() == View.VISIBLE) {
             if (playerScreen.isQueueOpen()) {
                 playerScreen.closeQueue();
                 return true;
             }
             closePlayer();
+            return true;
+        }
+        if (detailHost != null && detailHost.getVisibility() == View.VISIBLE
+                && detailScreen != null) {
+            detailScreen.back();
+            return true;
+        }
+        if (searchScreen.isOpen()) {
+            closeSearch();
             return true;
         }
         if (overlayCollection != null) {
@@ -1097,6 +1199,7 @@ public final class OneActivity extends Activity
         if (authPoll != null) main.removeCallbacks(authPoll);
         disposeTabScreen();
         if (overlayCollection != null) overlayCollection.dispose();
+        if (detailScreen != null) detailScreen.dispose();
         if (searchScreen != null) searchScreen.dispose();
         if (client != null) client.disconnect();
         if (artwork != null) artwork.shutdown();

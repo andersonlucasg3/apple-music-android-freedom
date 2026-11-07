@@ -46,6 +46,17 @@ public interface ScreenHost {
 
     void openCollection(String title, String parentId, boolean grid);
 
+    /** Opens the catalogue detail stack at an artist/album/playlist/song id. */
+    void openArtist(String id, String name, String artworkUrl);
+
+    void openAlbum(String id, String title, String artist, String artworkUrl);
+
+    void openPlaylist(String id, String title, String curator, String artworkUrl);
+
+    void openSong(String id, String title, String artist, String artworkUrl);
+
+    void closeDetail();
+
     void sessionActions();
 
     void itemActions(MediaClient.Item item);

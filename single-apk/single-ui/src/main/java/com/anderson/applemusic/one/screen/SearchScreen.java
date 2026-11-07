@@ -299,18 +299,40 @@ public final class SearchScreen {
         String subtitle = result.artist;
         if (subtitle == null || subtitle.length() == 0) subtitle = result.kind;
         ListRow row = new ListRow(activity, artwork, result.title, subtitle,
-                result.artworkUrl, false);
+                result.artworkUrl, true);
         row.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {
+                open(result);
+                status.setText("Abrindo " + result.title);
+            }
+        });
+        // Long press keeps the old "play this result" behaviour; a tap now opens the
+        // artist/album/playlist/song level of the result.
+        row.setOnLongClickListener(new View.OnLongClickListener() {
+            @Override
+            public boolean onLongClick(View v) {
                 host.playId(result.id, result.title);
                 status.setText("Tocando " + result.title);
+                return true;
             }
         });
         LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
         params.bottomMargin = Tokens.dp(8);
         results.addView(row, params);
+    }
+
+    private void open(CatalogSearch.Result result) {
+        if ("Artista".equals(result.kind)) {
+            host.openArtist(result.id, result.title, result.artworkUrl);
+        } else if ("Álbum".equals(result.kind)) {
+            host.openAlbum(result.id, result.title, result.artist, result.artworkUrl);
+        } else if ("Playlist".equals(result.kind)) {
+            host.openPlaylist(result.id, result.title, result.artist, result.artworkUrl);
+        } else {
+            host.openSong(result.id, result.title, result.artist, result.artworkUrl);
+        }
     }
 
     private void showInitial() {

@@ -323,7 +323,11 @@ public final class HomeScreen implements ChildSink {
         hero.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {
-                playHero();
+                if (heroItem != null) {
+                    choose(heroItem);
+                } else {
+                    playHero();
+                }
             }
         });
 
@@ -347,13 +351,31 @@ public final class HomeScreen implements ChildSink {
     }
 
     private void choose(MediaClient.Item item) {
-        if (item.playable) {
-            host.play(item);
-        } else if (item.browsable) {
+        String last = lastSegment(item.id);
+        if (last.startsWith("3-")) {
+            host.openAlbum(last.substring(2), item.title, item.subtitle, item.artworkUri);
+            return;
+        }
+        if (last.startsWith("4-")) {
+            host.openPlaylist(last.substring(2), item.title, item.subtitle, item.artworkUri);
+            return;
+        }
+        if (last.startsWith("6-")) {
+            host.openArtist(last.substring(2), item.title, item.artworkUri);
+            return;
+        }
+        if (item.browsable) {
             host.openCollection(item.title, item.id, false);
+        } else if (item.playable) {
+            host.play(item);
         } else {
             host.status("Item não reproduzível");
         }
+    }
+
+    private static String lastSegment(String id) {
+        int slash = id.lastIndexOf('/');
+        return slash < 0 ? id : id.substring(slash + 1);
     }
 
     private void stopSkeleton() {

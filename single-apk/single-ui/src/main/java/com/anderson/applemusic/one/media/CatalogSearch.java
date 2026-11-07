@@ -74,6 +74,146 @@ public final class CatalogSearch {
         }
     }
 
+    /** One catalogue track, with the duration/track number the detail screens show. */
+    public static final class Track {
+        public final String id;
+        public final String title;
+        public final String artist;
+        public final String albumName;
+        public final long durationMs;
+        public final int trackNumber;
+        public final int discNumber;
+
+        public Track(String id, String title, String artist, String albumName, long durationMs,
+                     int trackNumber, int discNumber) {
+            this.id = id == null ? "" : id;
+            this.title = title == null ? "" : title;
+            this.artist = artist == null ? "" : artist;
+            this.albumName = albumName == null ? "" : albumName;
+            this.durationMs = durationMs;
+            this.trackNumber = trackNumber;
+            this.discNumber = discNumber;
+        }
+
+        /** {@code m:ss} (or {@code h:mm:ss}), or an empty string when the API omits it. */
+        public String durationText() {
+            if (durationMs <= 0L) return "";
+            long seconds = durationMs / 1000L;
+            long hours = seconds / 3600L;
+            long minutes = (seconds % 3600L) / 60L;
+            long rest = seconds % 60L;
+            return hours > 0
+                    ? String.format(Locale.ROOT, "%d:%02d:%02d", hours, minutes, rest)
+                    : String.format(Locale.ROOT, "%d:%02d", minutes, rest);
+        }
+    }
+
+    /** Artist page: name/genres/artwork plus every album and the top songs view. */
+    public static final class ArtistDetail {
+        public final String id;
+        public final String name;
+        public final String artworkUrl;
+        public final List<String> genres;
+        public final List<Result> albums;
+        public List<Track> topSongs;
+
+        public ArtistDetail(String id, String name, String artworkUrl, List<String> genres,
+                            List<Result> albums) {
+            this.id = id == null ? "" : id;
+            this.name = name == null ? "" : name;
+            this.artworkUrl = artworkUrl;
+            this.genres = genres == null ? Collections.<String>emptyList() : genres;
+            this.albums = albums == null ? Collections.<Result>emptyList() : albums;
+            this.topSongs = Collections.emptyList();
+        }
+    }
+
+    /** Album page: header metadata, the artist id (clickable) and the tracks with duration. */
+    public static final class AlbumDetail {
+        public final String id;
+        public final String title;
+        public final String artist;
+        public final String artistId;
+        public final String artworkUrl;
+        public final String copyright;
+        public final String recordLabel;
+        public final String releaseDate;
+        public final int trackCount;
+        public final List<String> genres;
+        public final List<Track> tracks;
+
+        public AlbumDetail(String id, String title, String artist, String artistId,
+                           String artworkUrl, String copyright, String recordLabel,
+                           String releaseDate, int trackCount, List<String> genres,
+                           List<Track> tracks) {
+            this.id = id == null ? "" : id;
+            this.title = title == null ? "" : title;
+            this.artist = artist == null ? "" : artist;
+            this.artistId = artistId == null ? "" : artistId;
+            this.artworkUrl = artworkUrl;
+            this.copyright = copyright == null ? "" : copyright;
+            this.recordLabel = recordLabel == null ? "" : recordLabel;
+            this.releaseDate = releaseDate == null ? "" : releaseDate;
+            this.trackCount = trackCount;
+            this.genres = genres == null ? Collections.<String>emptyList() : genres;
+            this.tracks = tracks == null ? Collections.<Track>emptyList() : tracks;
+        }
+
+        /** Release year, for the album header line. */
+        public String year() {
+            return releaseDate.length() >= 4 ? releaseDate.substring(0, 4) : "";
+        }
+    }
+
+    /** Song page: title, artist/album links and duration. */
+    public static final class SongDetail {
+        public final String id;
+        public final String title;
+        public final String artist;
+        public final String artistId;
+        public final String albumName;
+        public final String albumId;
+        public final String artworkUrl;
+        public final long durationMs;
+
+        public SongDetail(String id, String title, String artist, String artistId,
+                          String albumName, String albumId, String artworkUrl,
+                          long durationMs) {
+            this.id = id == null ? "" : id;
+            this.title = title == null ? "" : title;
+            this.artist = artist == null ? "" : artist;
+            this.artistId = artistId == null ? "" : artistId;
+            this.albumName = albumName == null ? "" : albumName;
+            this.albumId = albumId == null ? "" : albumId;
+            this.artworkUrl = artworkUrl;
+            this.durationMs = durationMs;
+        }
+
+        public String durationText() {
+            return new Track(id, title, artist, albumName, durationMs, 0, 0).durationText();
+        }
+    }
+
+    /** Playlist page: curator, description and tracks with duration. */
+    public static final class PlaylistDetail {
+        public final String id;
+        public final String title;
+        public final String curator;
+        public final String description;
+        public final String artworkUrl;
+        public final List<Track> tracks;
+
+        public PlaylistDetail(String id, String title, String curator, String description,
+                              String artworkUrl, List<Track> tracks) {
+            this.id = id == null ? "" : id;
+            this.title = title == null ? "" : title;
+            this.curator = curator == null ? "" : curator;
+            this.description = description == null ? "" : description;
+            this.artworkUrl = artworkUrl;
+            this.tracks = tracks == null ? Collections.<Track>emptyList() : tracks;
+        }
+    }
+
     public interface Callback {
         void onResults(List<Result> results);
 
@@ -82,6 +222,30 @@ public final class CatalogSearch {
 
     public interface CollectionCallback {
         void onCollection(Collection collection);
+
+        void onFailure(String message);
+    }
+
+    public interface ArtistCallback {
+        void onArtist(ArtistDetail artist);
+
+        void onFailure(String message);
+    }
+
+    public interface AlbumCallback {
+        void onAlbum(AlbumDetail album);
+
+        void onFailure(String message);
+    }
+
+    public interface SongCallback {
+        void onSong(SongDetail song);
+
+        void onFailure(String message);
+    }
+
+    public interface PlaylistCallback {
+        void onPlaylist(PlaylistDetail playlist);
 
         void onFailure(String message);
     }
@@ -102,7 +266,7 @@ public final class CatalogSearch {
     private static final String[][] KINDS = {
             {"songs", "Música", "artistName"},
             {"albums", "Álbum", "artistName"},
-            {"artists", "Artista", "genreNames"},
+            {"artists", "Artista", ""},
             {"playlists", "Playlist", "curatorName"},
     };
 
@@ -197,6 +361,266 @@ public final class CatalogSearch {
                         return collection(body, "tracks", albumId);
                     }
                 }, collectionWaiter(callback));
+    }
+
+    // --- detail screens ----------------------------------------------------------
+
+    /** Artist page: profile + every album ({@code include=albums}) and the top-songs view. */
+    public void artist(final String artistId, final ArtistCallback callback) {
+        load("/" + storefront() + "/artists/" + encode(artistId)
+                        + "?include=albums&limit[albums]=50&l=" + language(),
+                new JsonParser<ArtistDetail>() {
+                    @Override
+                    public ArtistDetail parse(String body) throws Exception {
+                        return artistDetail(body, artistId);
+                    }
+                }, new Waiter<ArtistDetail>() {
+                    @Override
+                    public void deliver(final ArtistDetail artist) {
+                        // The top-songs view is a second resource; a failure there only
+                        // drops that section, it does not fail the artist page.
+                        load("/" + storefront() + "/artists/" + encode(artist.id)
+                                        + "/view/top-songs?limit=10&l=" + language(),
+                                new JsonParser<List<Track>>() {
+                                    @Override
+                                    public List<Track> parse(String body) throws Exception {
+                                        return tracks(new JSONObject(body).optJSONArray("data"),
+                                                "", "");
+                                    }
+                                }, new Waiter<List<Track>>() {
+                                    @Override
+                                    public void deliver(List<Track> value) {
+                                        artist.topSongs = value;
+                                        callback.onArtist(artist);
+                                    }
+
+                                    @Override
+                                    public void fail(String message) {
+                                        Log.w(TAG, "top-songs unavailable for " + artist.id
+                                                + ": " + message);
+                                        callback.onArtist(artist);
+                                    }
+                                });
+                    }
+
+                    @Override
+                    public void fail(String message) {
+                        callback.onFailure(message);
+                    }
+                });
+    }
+
+    /** Album page: metadata, the artist relationship and the tracks with their durations. */
+    public void album(final String albumId, final AlbumCallback callback) {
+        load("/" + storefront() + "/albums/" + encode(albumId)
+                        + "?include=tracks,artists&limit[tracks]=100&l=" + language(),
+                new JsonParser<AlbumDetail>() {
+                    @Override
+                    public AlbumDetail parse(String body) throws Exception {
+                        return albumDetail(body, albumId);
+                    }
+                }, new Waiter<AlbumDetail>() {
+                    @Override
+                    public void deliver(AlbumDetail value) {
+                        callback.onAlbum(value);
+                    }
+
+                    @Override
+                    public void fail(String message) {
+                        callback.onFailure(message);
+                    }
+                });
+    }
+
+    /** Song page: title/artist/album links and the duration. */
+    public void song(final String songId, final SongCallback callback) {
+        load("/" + storefront() + "/songs/" + encode(songId)
+                        + "?include=albums,artists&l=" + language(),
+                new JsonParser<SongDetail>() {
+                    @Override
+                    public SongDetail parse(String body) throws Exception {
+                        return songDetail(body, songId);
+                    }
+                }, new Waiter<SongDetail>() {
+                    @Override
+                    public void deliver(SongDetail value) {
+                        callback.onSong(value);
+                    }
+
+                    @Override
+                    public void fail(String message) {
+                        callback.onFailure(message);
+                    }
+                });
+    }
+
+    /** Playlist page with its tracks (duration/track number) and curator. */
+    public void playlist(final String playlistId, final PlaylistCallback callback) {
+        load("/" + storefront() + "/playlists/" + encode(playlistId)
+                        + "?include=tracks&limit[tracks]=100&l=" + language(),
+                new JsonParser<PlaylistDetail>() {
+                    @Override
+                    public PlaylistDetail parse(String body) throws Exception {
+                        return playlistDetail(body, playlistId);
+                    }
+                }, new Waiter<PlaylistDetail>() {
+                    @Override
+                    public void deliver(PlaylistDetail value) {
+                        callback.onPlaylist(value);
+                    }
+
+                    @Override
+                    public void fail(String message) {
+                        callback.onFailure(message);
+                    }
+                });
+    }
+
+    // --- detail parsing ----------------------------------------------------------
+
+    private static JSONObject firstData(String body) throws Exception {
+        JSONArray data = new JSONObject(body).optJSONArray("data");
+        return data == null || data.length() == 0 ? null : data.optJSONObject(0);
+    }
+
+    private static JSONObject attributes(JSONObject item) {
+        JSONObject attributes = item == null ? null : item.optJSONObject("attributes");
+        return attributes == null ? new JSONObject() : attributes;
+    }
+
+    private static JSONArray relationship(JSONObject item, String name) {
+        JSONObject relationships = item == null ? null : item.optJSONObject("relationships");
+        JSONObject group = relationships == null ? null : relationships.optJSONObject(name);
+        return group == null ? null : group.optJSONArray("data");
+    }
+
+    private static String relationshipId(JSONObject item, String name) {
+        JSONArray data = relationship(item, name);
+        if (data == null || data.length() == 0) return "";
+        JSONObject entry = data.optJSONObject(0);
+        return entry == null ? "" : entry.optString("id");
+    }
+
+    private ArtistDetail artistDetail(String body, String fallbackId) throws Exception {
+        JSONObject item = firstData(body);
+        if (item == null) return null;
+        JSONObject attributes = attributes(item);
+        String id = item.optString("id");
+        if (id.length() == 0) id = fallbackId;
+        List<String> genres = strings(attributes.optJSONArray("genreNames"));
+        List<Result> albums = new ArrayList<Result>();
+        JSONArray data = relationship(item, "albums");
+        if (data != null) {
+            for (int i = 0; i < data.length(); i++) {
+                JSONObject entry = data.optJSONObject(i);
+                if (entry == null) continue;
+                String entryId = entry.optString("id");
+                JSONObject albumAttributes = entry.optJSONObject("attributes");
+                if (entryId.length() == 0 || albumAttributes == null) continue;
+                String name = albumAttributes.optString("name");
+                if (name.length() == 0) continue;
+                albums.add(new Result(entryId, "Álbum", name,
+                        albumAttributes.optString("artistName"), artwork(albumAttributes, 300)));
+            }
+        }
+        return new ArtistDetail(id, attributes.optString("name"), artwork(attributes, 600),
+                genres, albums);
+    }
+
+    private AlbumDetail albumDetail(String body, String fallbackId) throws Exception {
+        JSONObject item = firstData(body);
+        if (item == null) return null;
+        JSONObject attributes = attributes(item);
+        String id = item.optString("id");
+        if (id.length() == 0) id = fallbackId;
+        String artistId = relationshipId(item, "artists");
+        String artist = attributes.optString("artistName");
+        JSONArray artists = relationship(item, "artists");
+        if (artist.length() == 0 && artists != null && artists.length() > 0) {
+            artist = attributes(artists.optJSONObject(0)).optString("name");
+        }
+        List<Track> tracks = tracks(relationship(item, "tracks"),
+                attributes.optString("name"), artist);
+        int trackCount = attributes.optInt("trackCount");
+        if (trackCount <= 0) trackCount = tracks.size();
+        return new AlbumDetail(id, attributes.optString("name"), artist, artistId,
+                artwork(attributes, 600), attributes.optString("copyright"),
+                attributes.optString("recordLabel"), attributes.optString("releaseDate"),
+                trackCount, strings(attributes.optJSONArray("genreNames")), tracks);
+    }
+
+    private SongDetail songDetail(String body, String fallbackId) throws Exception {
+        JSONObject item = firstData(body);
+        if (item == null) return null;
+        JSONObject attributes = attributes(item);
+        String id = item.optString("id");
+        if (id.length() == 0) id = fallbackId;
+        String albumName = attributes.optString("albumName");
+        JSONArray albums = relationship(item, "albums");
+        if (albumName.length() == 0 && albums != null && albums.length() > 0) {
+            albumName = attributes(albums.optJSONObject(0)).optString("name");
+        }
+        return new SongDetail(id, attributes.optString("name"),
+                attributes.optString("artistName"), relationshipId(item, "artists"),
+                albumName, relationshipId(item, "albums"), artwork(attributes, 600),
+                attributes.optLong("durationInMillis"));
+    }
+
+    private PlaylistDetail playlistDetail(String body, String fallbackId) throws Exception {
+        JSONObject item = firstData(body);
+        if (item == null) return null;
+        JSONObject attributes = attributes(item);
+        String id = item.optString("id");
+        if (id.length() == 0) id = fallbackId;
+        String description = "";
+        JSONObject notes = attributes.optJSONObject("editorialNotes");
+        if (notes != null) {
+            description = notes.optString("short");
+            if (description.length() == 0) description = notes.optString("standard");
+        }
+        if (description.length() == 0) {
+            JSONObject plain = attributes.optJSONObject("description");
+            if (plain != null) {
+                description = plain.optString("short");
+                if (description.length() == 0) description = plain.optString("standard");
+            }
+        }
+        return new PlaylistDetail(id, attributes.optString("name"),
+                attributes.optString("curatorName"), description, artwork(attributes, 600),
+                tracks(relationship(item, "tracks"), attributes.optString("name"), ""));
+    }
+
+    private static List<Track> tracks(JSONArray data, String albumFallback,
+                                      String artistFallback) {
+        List<Track> tracks = new ArrayList<Track>();
+        if (data == null) return tracks;
+        for (int i = 0; i < data.length(); i++) {
+            JSONObject entry = data.optJSONObject(i);
+            if (entry == null) continue;
+            String id = entry.optString("id");
+            JSONObject attributes = entry.optJSONObject("attributes");
+            if (id.length() == 0 || attributes == null) continue;
+            String title = attributes.optString("name");
+            if (title.length() == 0) continue;
+            String artist = attributes.optString("artistName");
+            if (artist.length() == 0) artist = artistFallback;
+            String album = attributes.optString("albumName");
+            if (album.length() == 0) album = albumFallback;
+            tracks.add(new Track(id, title, artist, album,
+                    attributes.optLong("durationInMillis"),
+                    attributes.optInt("trackNumber"), attributes.optInt("discNumber")));
+        }
+        return tracks;
+    }
+
+    private static List<String> strings(JSONArray data) {
+        List<String> values = new ArrayList<String>();
+        if (data == null) return values;
+        for (int i = 0; i < data.length(); i++) {
+            String value = data.optString(i);
+            if (value != null && value.length() > 0) values.add(value);
+        }
+        return values;
     }
 
     /** Track list of a catalogue playlist id (Home shelves carry the catalogue id). */
@@ -353,11 +777,15 @@ public final class CatalogSearch {
     }
 
     private static String artwork(JSONObject attributes) {
+        return artwork(attributes, 300);
+    }
+
+    private static String artwork(JSONObject attributes, int size) {
         JSONObject artwork = attributes.optJSONObject("artwork");
         if (artwork == null) return null;
         String url = artwork.optString("url");
         if (url.length() == 0) return null;
-        return url.replace("{w}", "300").replace("{h}", "300");
+        return url.replace("{w}", String.valueOf(size)).replace("{h}", String.valueOf(size));
     }
 
     private static String searchPath(String term) {
