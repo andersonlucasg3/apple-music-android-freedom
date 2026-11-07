@@ -12,7 +12,7 @@ Documento de planejamento. O produto são **apps próprios** que usam o Apple Mu
 | `core/` | Cliente `MediaBrowser`/`MediaController`, modelos, playback, ações da sessão, busca e auto-update — compartilhado. |
 | `tv-app/` | UI para Android TV (D-pad). |
 | `car-app/` | UI para o head unit BYD DiLink (toque/D-pad). |
-| `single-apk/` | Spike encerrado: engine + UI no mesmo APK (não viável). |
+| `single-apk/` | APK único por ABI: engine + UI framework-only no mesmo pacote (`AppleMusic-one-<abi>.apk`). |
 | `search-spike/` | Spike encerrado: leitura do developer token e chamada à amp-api. |
 
 ## Princípios
@@ -127,16 +127,29 @@ Documento de planejamento. O produto são **apps próprios** que usam o Apple Mu
   não os percentis do `gfxinfo` agregado. Dumps e scripts em `.pipeline/tv-app/perf2/` (local,
   não versionado); narrativa completa em [`tv-app/README.md`](tv-app/README.md#performance).
 
-## Decisão: APK único por device (encerrado — não viável)
+## Decisão: APK único por device (viável com UI framework-only)
 
-Investigado em três fases (`single-apk/`): o empacotamento funciona (dex extra + activity no
-manifest + `install -r` preserva a conta), mas o **engine foi minerado pelo R8** — por exemplo
-`kotlin.Unit.INSTANCE` virou o static field `a`. Com o nosso dex na frente, o engine perde a
-própria cópia e morre no `FirebaseInitProvider` (`NoSuchFieldError: No field a ...`); com o dex do
-engine na frente, é a UI nova que morre (`ComponentActivity.<init>`). Recompilar contra as versões
-do engine não resolve: qualquer classe tocada pelo R8 colide.
+A conclusão anterior ("não viável") valia para a UI em Compose/AndroidX. A decisão nova: **é
+viável**, desde que a UI seja **só Java + views do framework**, sem nenhuma biblioteca.
 
-Conclusão: **manter dois APKs** (engine + companion) assinados com o mesmo cert. Para um APK único
-seria necessário compilar a UI dentro do pipeline R8 do engine (volta a ser patch/extensão) ou um
-engine sem minificação — ambos piores que a arquitetura atual.
+Por quê:
+
+- O **engine foi minerado pelo R8** — por exemplo `kotlin.Unit.INSTANCE` virou o static field `a`.
+  Qualquer classe de terceiro (AndroidX, Kotlin, Compose, Coil) colide com a cópia do engine e
+  quebra o `FirebaseInitProvider` (`NoSuchFieldError: No field a`) ou a UI nova
+  (`ComponentActivity.<init>`). Por isso o APK único continua **sem** Compose/AndroidX: o motivo
+  é o R8, não o empacotamento.
+- Java puro não referencia classes mineradas: `single-apk/single-ui` compila com
+  `javac --release 8` + `d8 --min-api 29` contra `android.jar`, e o dex resultante só tem
+  `com.anderson.applemusic.one.*` — convive com o dex do engine como `classesN.dex`.
+- A activity injetada no manifest binário vira a `LAUNCHER`; a `common.MainActivity` do engine
+  continua no pacote (botão **Conta**). Instalar por cima preserva UID/conta e o cert é o mesmo.
+
+O que o CI faz (1.8.0+): compila a UI, injeta o dex + `REQUEST_INSTALL_PACKAGES` no engine
+assinado por ABI, reassina com o p12 e publica `AppleMusic-one-arm32.apk` /
+`AppleMusic-one-arm64.apk`; o `updates.json` ganha `one-arm32`/`one-arm64` (`versionCode` da UI) e
+o updater embutido (download + SHA-256 + `PackageInstaller`) atualiza o próprio pacote.
+
+Limite atual: paridade de telas/visual com os companions (Biblioteca/Rádio próprias, polimento) e
+`one-x86` no CI; x86 só no build local para o emulador.
 

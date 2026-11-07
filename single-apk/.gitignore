@@ -1,4 +1,4 @@
 out/
 __pycache__/
 
-out-one/
+out-*/

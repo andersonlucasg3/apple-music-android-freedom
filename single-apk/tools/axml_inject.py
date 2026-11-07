@@ -5,9 +5,10 @@ The engine APK ships a binary (AXML) manifest.  Rebuilding it with apktool/aapt2
 is risky (the manifest references dozens of app resources), so this tool edits the
 binary chunks in place:
 
-  * appends the new strings (activity class, MAIN action, LAUNCHER category) to the
-    existing string pool, keeping every existing index stable (the resource map of
-    the manifest indexes attribute-name strings by position);
+  * appends the new strings (activity class, MAIN action, LAUNCHER category,
+    permission) to the existing string pool, keeping every existing index stable
+    (the resource map of the manifest indexes attribute-name strings by position);
+  * inserts <uses-permission> chunks (when requested) before <application>;
   * inserts the <activity><intent-filter>...</intent-filter></activity> chunks as
     the first child of <application>;
   * fixes the outer XML chunk size.
@@ -17,7 +18,8 @@ byte for byte.
 
 Usage:
     python axml_inject.py --in AndroidManifest.xml --out patched.xml \
-        --activity com.example.ProbeActivity
+        --activity com.example.ProbeActivity \
+        --permission android.permission.REQUEST_INSTALL_PACKAGES
     python axml_inject.py --in AndroidManifest.xml --inspect
 """
 
@@ -180,7 +182,27 @@ def end_element(name_idx, line=0):
                        NO_ENTRY, name_idx)
 
 
-def inject(data, activity_class, label=None, theme_res_id=None):
+def declares_uses_permission(chunks, data, pool, name_attr, permission):
+    """True when <uses-permission android:name="permission"> is already declared."""
+    for pos, ctype, _hdr, _size in chunks:
+        if ctype != RES_XML_START_ELEMENT_TYPE:
+            continue
+        if pool.strings[rd32(data, pos + 20)] != "uses-permission":
+            continue
+        attr_start = rd16(data, pos + 24)
+        attr_count = rd16(data, pos + 28)
+        for i in range(attr_count):
+            off = pos + 16 + attr_start + i * 20
+            if rd32(data, off + 4) != name_attr:
+                continue
+            if data[off + 15] != TYPE_STRING:
+                continue
+            if pool.strings[rd32(data, off + 16)] == permission:
+                return True
+    return False
+
+
+def inject(data, activity_class, label=None, theme_res_id=None, permissions=None):
     if rd16(data, 0) != RES_XML_TYPE:
         raise ValueError("not a binary XML file")
     header_size = rd16(data, 2)
@@ -238,6 +260,17 @@ def inject(data, activity_class, label=None, theme_res_id=None):
             raise ValueError("android:theme attribute name missing from the pool")
         attrs.append((ns_idx, theme_attr, NO_ENTRY, TYPE_REFERENCE, theme_res_id))
 
+    permission_chunks = b""
+    for permission in permissions or []:
+        if declares_uses_permission(chunks, data, pool, name_attr, permission):
+            continue
+        permission_idx = pool.add(permission)
+        element_idx = pool.add("uses-permission")
+        permission_chunks += start_element(
+            element_idx,
+            [(ns_idx, name_attr, permission_idx, TYPE_STRING, permission_idx)])
+        permission_chunks += end_element(element_idx)
+
     insert = b"".join([
         start_element(pool.index_of("activity"), attrs),
         start_element(pool.index_of("intent-filter"), []),
@@ -250,9 +283,11 @@ def inject(data, activity_class, label=None, theme_res_id=None):
     ])
 
     pool_end = pool_pos + pool_size
-    app_end = chunks[app_idx][0] + chunks[app_idx][3]
+    app_start = chunks[app_idx][0]
+    app_end = app_start + chunks[app_idx][3]
     pool_chunk = pool.build()
-    out = data[:pool_pos] + pool_chunk + data[pool_end:app_end] + insert + data[app_end:]
+    out = (data[:pool_pos] + pool_chunk + data[pool_end:app_start] + permission_chunks
+           + data[app_start:app_end] + insert + data[app_end:])
     out = out[:4] + struct.pack("<I", len(out)) + out[8:]
     return out, pool
 
@@ -265,6 +300,9 @@ def main():
     ap.add_argument("--label", default=None)
     ap.add_argument("--theme", default=None,
                     help="framework style resource id for android:theme (e.g. 0x0103022e)")
+    ap.add_argument("--permission", action="append", default=[],
+                    help="uses-permission name to add (repeatable), e.g. "
+                         "android.permission.REQUEST_INSTALL_PACKAGES")
     ap.add_argument("--inspect", action="store_true")
     args = ap.parse_args()
 
@@ -288,9 +326,10 @@ def main():
     if not args.out:
         ap.error("--out is required unless --inspect is used")
     theme = int(args.theme, 0) if args.theme else None
-    out, pool = inject(data, args.activity, args.label, theme)
+    out, pool = inject(data, args.activity, args.label, theme, args.permission)
     open(args.out, "wb").write(out)
-    print("wrote %s (%d bytes, pool strings %d)" % (args.out, len(out), pool.count))
+    print("wrote %s (%d bytes, pool strings %d, permissions %s)"
+          % (args.out, len(out), pool.count, args.permission))
     return 0
 
 

@@ -5,6 +5,7 @@ import android.app.AlertDialog;
 import android.content.DialogInterface;
 import android.content.Intent;
 import android.content.pm.PackageInfo;
+import android.content.pm.PackageInstaller;
 import android.content.pm.PackageManager;
 import android.graphics.Color;
 import android.graphics.Typeface;
@@ -26,6 +27,7 @@ import android.widget.FrameLayout;
 import android.widget.HorizontalScrollView;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
+import android.widget.ProgressBar;
 import android.widget.ScrollView;
 import android.widget.SeekBar;
 import android.widget.TextView;
@@ -46,9 +48,11 @@ import java.util.concurrent.Executors;
  * wired to {@link MediaClient} / {@link CatalogSearch}; artwork goes through
  * {@link ArtworkLoader}. Every pixel is created in code, all strings are literal.
  */
-public final class OneActivity extends Activity implements MediaClient.Listener {
+public final class OneActivity extends Activity
+        implements MediaClient.Listener, UpdateManager.Listener {
 
     private static final String TAG = "AppleMusicOne";
+    static final String ACTION_INSTALL_STATUS = "com.anderson.applemusic.one.INSTALL_STATUS";
 
     private static final int COLOR_BG = 0xFF000000;
     private static final int COLOR_SURFACE = 0xFF1C1C1E;
@@ -69,6 +73,15 @@ public final class OneActivity extends Activity implements MediaClient.Listener 
     private MediaClient client;
     private ArtworkLoader artwork;
     private CatalogSearch catalog;
+    private UpdateManager updater;
+
+    private AlertDialog updateDialog;
+    private TextView updateMessage;
+    private ProgressBar updateProgress;
+    private TextView updateCheckButton;
+    private TextView updateDownloadButton;
+    private TextView updateCancelButton;
+    private UpdateManager.Update pendingUpdate;
 
     private LinearLayout tabBar;
     private LinearLayout content;
@@ -127,9 +140,13 @@ public final class OneActivity extends Activity implements MediaClient.Listener 
         client = new MediaClient(this);
         artwork = new ArtworkLoader(this);
         catalog = new CatalogSearch(this);
+        updater = new UpdateManager(this);
+        updater.setListener(this);
         client.setListener(this);
         buildUi();
         client.connect();
+        handleInstallStatus(getIntent());
+        updater.autoCheck();
     }
 
     // --- UI scaffolding -----------------------------------------------------------
@@ -256,7 +273,7 @@ public final class OneActivity extends Activity implements MediaClient.Listener 
         tabsRow.addView(button("Atualizações", new View.OnClickListener() {
             @Override
             public void onClick(View v) {
-                showVersion();
+                showUpdates();
             }
         }), updateParams);
         root.addView(tabsRow, new LinearLayout.LayoutParams(
@@ -1276,20 +1293,168 @@ public final class OneActivity extends Activity implements MediaClient.Listener 
         }
     }
 
-    private void showVersion() {
-        String message;
+    private void showUpdates() {
+        LinearLayout panel = new LinearLayout(this);
+        panel.setOrientation(LinearLayout.VERTICAL);
+        panel.setPadding(dp(20), dp(8), dp(20), 0);
+
+        updateMessage = text("", 14f, COLOR_TEXT, false);
+        updateMessage.setLineSpacing(dp(2), 1f);
+        panel.addView(updateMessage, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+
+        updateProgress = new ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal);
+        updateProgress.setMax(100);
+        updateProgress.setVisibility(View.GONE);
+        LinearLayout.LayoutParams progressParams = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        progressParams.topMargin = dp(12);
+        panel.addView(updateProgress, progressParams);
+
+        LinearLayout actions = new LinearLayout(this);
+        actions.setOrientation(LinearLayout.HORIZONTAL);
+        actions.setGravity(Gravity.END);
+        updateCheckButton = button("Verificar", new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                updater.check();
+            }
+        });
+        updateDownloadButton = button("Baixar e instalar", new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                updater.download(pendingUpdate);
+            }
+        });
+        updateCancelButton = button("Cancelar", new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                updater.cancel();
+            }
+        });
+        actions.addView(updateCheckButton);
+        actions.addView(updateDownloadButton, topBarButtonParams());
+        actions.addView(updateCancelButton, topBarButtonParams());
+        LinearLayout.LayoutParams actionParams = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        actionParams.topMargin = dp(16);
+        panel.addView(actions, actionParams);
+
+        updateDialog = new AlertDialog.Builder(this)
+                .setTitle("Atualizações")
+                .setView(panel)
+                .setPositiveButton("Fechar", null)
+                .create();
+        updateDialog.setOnDismissListener(new DialogInterface.OnDismissListener() {
+            @Override
+            public void onDismiss(DialogInterface dialog) {
+                updateDialog = null;
+                updateMessage = null;
+                updateProgress = null;
+                updateCheckButton = null;
+                updateDownloadButton = null;
+                updateCancelButton = null;
+            }
+        });
+        updateDialog.show();
+        pendingUpdate = updater.currentState().update;
+        renderUpdateState(updater.currentState());
+        updater.check();
+    }
+
+    @Override
+    public void onUpdateState(UpdateManager.State state) {
+        if (state.update != null) pendingUpdate = state.update;
+        if (updateDialog != null && updateDialog.isShowing()) {
+            renderUpdateState(state);
+            return;
+        }
+        if (state.phase == UpdateManager.AVAILABLE && state.update != null) {
+            setMessage("Atualização " + state.update.version + " disponível — toque em Atualizações");
+        } else if (state.phase == UpdateManager.INSTALLED || state.phase == UpdateManager.ERROR) {
+            setMessage(state.message);
+        }
+    }
+
+    private void renderUpdateState(UpdateManager.State state) {
+        if (updateMessage == null) return;
+        String message = state.message;
+        if (state.phase == UpdateManager.IDLE || state.message == null || state.message.length() == 0) {
+            message = "Instalada: " + Version.NAME + " (" + Version.CODE + ")"
+                    + "\nEngine: " + engineVersion()
+                    + "\n\nVerifique se há uma versão nova.";
+        } else if (state.phase == UpdateManager.CHECKING) {
+            message = message + "\nInstalada: " + Version.NAME + " (" + Version.CODE + ")";
+        }
+        updateMessage.setText(message);
+
+        boolean downloading = state.phase == UpdateManager.DOWNLOADING;
+        updateProgress.setVisibility(downloading ? View.VISIBLE : View.GONE);
+        if (downloading && state.progress >= 0) updateProgress.setProgress(state.progress);
+        setVisible(updateCheckButton, state.phase == UpdateManager.IDLE
+                || state.phase == UpdateManager.NONE
+                || state.phase == UpdateManager.INSTALLED
+                || state.phase == UpdateManager.ERROR
+                || state.phase == UpdateManager.AVAILABLE);
+        setVisible(updateDownloadButton,
+                state.phase == UpdateManager.AVAILABLE && state.update != null);
+        setVisible(updateCancelButton, downloading);
+    }
+
+    private static void setVisible(View view, boolean visible) {
+        if (view != null) view.setVisibility(visible ? View.VISIBLE : View.GONE);
+    }
+
+    private String engineVersion() {
         try {
             PackageInfo info = getPackageManager().getPackageInfo(getPackageName(), 0);
-            message = "Apple Music One (APK único)\nVersão " + info.versionName
-                    + " (" + info.versionCode + ")\n\nA verificação de atualizações entra no P1.";
+            return info.versionName + " (" + info.versionCode + ")";
         } catch (Throwable t) {
-            message = "Versão indisponível";
+            return "?";
         }
-        new AlertDialog.Builder(this)
-                .setTitle("Atualizações")
-                .setMessage(message)
-                .setPositiveButton("OK", null)
-                .show();
+    }
+
+    /**
+     * PackageInstaller sends the session status to the PendingIntent built in
+     * {@link UpdateManager}. For {@code STATUS_PENDING_USER_ACTION} the system intent is
+     * forwarded from this foreground activity (a background receiver would be blocked on
+     * Android 10+).
+     */
+    private void handleInstallStatus(Intent intent) {
+        if (intent == null) return;
+        int status = intent.getIntExtra(PackageInstaller.EXTRA_STATUS, Integer.MIN_VALUE);
+        if (status == Integer.MIN_VALUE) return;
+        // Mark handled so a recreation of the activity does not replay the dialog.
+        intent.putExtra(PackageInstaller.EXTRA_STATUS, Integer.MIN_VALUE);
+        if (status == PackageInstaller.STATUS_PENDING_USER_ACTION) {
+            Intent confirm = intent.getParcelableExtra(Intent.EXTRA_INTENT);
+            intent.removeExtra(Intent.EXTRA_INTENT);
+            if (confirm == null) {
+                updater.onInstallResult(false, "O instalador não retornou a confirmação.");
+                return;
+            }
+            confirm.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            try {
+                startActivity(confirm);
+            } catch (Throwable t) {
+                Log.e(TAG, "cannot open the package installer", t);
+                updater.onInstallResult(false, "Não foi possível abrir o instalador do sistema.");
+            }
+            return;
+        }
+        String detail = intent.getStringExtra(PackageInstaller.EXTRA_STATUS_MESSAGE);
+        boolean ok = status == PackageInstaller.STATUS_SUCCESS;
+        updater.onInstallResult(ok, ok
+                ? "Atualização instalada."
+                : "Instalação não concluída"
+                + (detail != null && detail.length() > 0 ? ": " + detail : "."));
+    }
+
+    @Override
+    protected void onNewIntent(Intent intent) {
+        super.onNewIntent(intent);
+        setIntent(intent);
+        handleInstallStatus(intent);
     }
 
     // --- misc -------------------------------------------------------------------------
@@ -1322,6 +1487,7 @@ public final class OneActivity extends Activity implements MediaClient.Listener 
         if (client != null) client.disconnect();
         if (artwork != null) artwork.shutdown();
         if (catalog != null) catalog.shutdown();
+        if (updater != null) updater.shutdown();
         loader.shutdownNow();
         super.onDestroy();
     }
