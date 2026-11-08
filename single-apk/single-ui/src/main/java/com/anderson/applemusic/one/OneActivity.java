@@ -203,8 +203,36 @@ public final class OneActivity extends Activity
     protected void onCreate(Bundle state) {
         super.onCreate(state);
         // Same style the injected android:theme points at; belt and braces if the binary
-        // manifest keeps the engine's own theme.
-        setTheme(android.R.style.Theme_Material_NoActionBar);
+        // manifest keeps the engine's own theme. On API < 30 the compile-time framework id
+        // may not exist, so the engine theme wins and its windowLayoutInDisplayCutoutMode=3
+        // crashes PhoneWindow.generateLayout; resolve the style by name at runtime.
+        int themeId;
+        if (Build.VERSION.SDK_INT < 30) {
+            themeId = getResources().getIdentifier("Theme_Material_NoActionBar", "style", "android");
+            if (themeId == 0) {
+                themeId = getResources().getIdentifier("Theme.Material.NoActionBar", "style", "android");
+            }
+        } else {
+            themeId = android.R.style.Theme_Material_NoActionBar;
+        }
+        if (themeId != 0) {
+            setTheme(themeId);
+        }
+        // The engine's application theme is compiled against API 36 and carries
+        // windowLayoutInDisplayCutoutMode=3, which API 29 rejects while installing the
+        // window decor. Replace the theme contents with a clean framework theme so the
+        // attribute never reaches PhoneWindow.generateLayout.
+        if (Build.VERSION.SDK_INT < 30) {
+            android.content.res.Resources.Theme clean =
+                    android.content.res.Resources.getSystem().newTheme();
+            getTheme().setTo(clean);
+            try {
+                getTheme().applyStyle(android.R.style.Theme_Material_NoActionBar, true);
+            } catch (Throwable ignored) {
+                // An id that this ROM does not know is fine: the clean theme is enough.
+            }
+        }
+        android.util.Log.i("OneTheme", "cutout themeId=" + themeId + " sdk=" + Build.VERSION.SDK_INT);
         Tokens.init(this);
         Inter.load(this);
         hasTouch = Tokens.touch();
