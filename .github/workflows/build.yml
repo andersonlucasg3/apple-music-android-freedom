@@ -60,6 +60,12 @@ jobs:
           yes | "$SDKMANAGER" --licenses > /dev/null
           "$SDKMANAGER" "platform-tools" "platforms;android-36" "build-tools;36.0.0"
 
+      # Testes JVM da UI (parsers da amp-api, normalização de nomes e mapa de ABI do
+      # updater). Rodam no runner, sem device e sem entrar no dex: o org.json só existe no
+      # classpath de teste. Falha aqui derruba a release antes de qualquer build.
+      - name: Run single-ui JVM tests
+        run: pwsh -NoProfile -File single-apk/test-single-ui.ps1
+
       - name: Resolve version
         env:
           INPUT_VERSION: ${{ inputs.version }}

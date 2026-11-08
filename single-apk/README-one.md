@@ -35,7 +35,7 @@ copiados para dentro do APK em `assets/one/` (ver **Build**).
 | `theme/` | `Tokens`, `Inter`, `Shapes`, `ColorArt` | design tokens (cores/raios/tipo/escala), tipografia Inter via assets, `GradientDrawable` arredondado + `clipToOutline`, cor dominante da capa |
 | `widget/` | `TopBar`, `TabView`, `MiniPlayer`, `CoverCard`, `SeeAllCard`, `ShelfView`, `ListRow`, `SectionHeader`, `ActionSheet`, `EmptyState`, `Skeleton`, `Pill`, `CircleButton`, `Focus`, `Icons`, `IconView` | componentes reutilizáveis; ícones desenhados em `Path` |
 | `screen/` | `HomeScreen`, `LibraryScreen`, `RadioScreen`, `CollectionScreen`, `DetailScreen`, `NowPlayingScreen`, `SearchScreen`, `UpdatesScreen`, `AccountScreen` + `ScreenHost`/`ChildSink` | telas e navegação; não há `Fragment`/AndroidX |
-| `media/` | `MediaClient`, `ArtworkLoader`, `CatalogSearch` | `MediaBrowser`/`MediaController` do engine, capas, busca na `amp-api` |
+| `media/` | `MediaClient`, `ArtworkLoader`, `CatalogSearch`, `CatalogResolver`, `AccountSession` | `MediaBrowser`/`MediaController` do engine, capas, busca na `amp-api`, resolução de nomes da biblioteca e leitura da conta |
 | `one` | `OneActivity`, `UpdateManager`, `Version` | shell (activity, overlays, updater, versão gerada no build) |
 
 `ScreenHost` é o contrato mínimo entre `OneActivity` e as telas: assinar um nó do browse,
@@ -83,8 +83,8 @@ Tokens espelhados dos companions Compose (`tv-app/TvTheme.kt`, `car-app/Theme.kt
 ## Build
 
 ```powershell
-./single-apk/build-one-apk.ps1 -PoneVersion 1.9.11         # versionCode 10911 derivado
-./single-apk/build-one-apk.ps1 -Abi arm64,arm32 -PoneVersion 1.9.11
+./single-apk/build-one-apk.ps1 -PoneVersion 1.9.12         # versionCode 10912 derivado
+./single-apk/build-one-apk.ps1 -Abi arm64,arm32 -PoneVersion 1.9.12
 ```
 
 O build compila a UI uma vez e gera, para cada ABI:
@@ -216,6 +216,9 @@ dex (`media/AccountSession.java`):
   “Assinatura em carência”, “Sem assinatura ativa” ou “Assinatura não informada”.
 - **Deslogado**: o convite e o botão “Entrar na conta Apple” continuam iguais, chamando
   `host.openAccount()` (reflexão `S()`/`showAMSAuthWithType` já existente).
+- **Ações (logado)**: **Gerenciar assinatura** e **Conta Apple** abrem a tela Account do
+  engine (deep link + componente, ver 1.9.12); BACK volta para esta UI. Sign out continua
+  fora do painel.
 - **Sair**: não há botão. Deslogar exige o `AccountStore.removeAccount`/`clearActive` +
   `SignOutTask` do AMSKit; o manifest não declara activity nem deep link de sign-out, e
   mexer nos arquivos à mão arriscaria a conta. O painel avisa que o sign-out não é feito
@@ -297,9 +300,10 @@ Com targetSdk 36 o *predictive back* vem ligado: o sistema deixa de chamar
   biblioteca (só `persistentId`) resolvem o id de catálogo pelo nome e abrem a mesma tela;
   estações (`9-`) tocam.
 - **Conta**: com sessão ativa, mostra o **perfil** do engine (avatar com a inicial,
-  nome, Apple ID e assinatura); sem sessão, mostra o convite e o botão oficial de login
-  do Apple ID (fluxo acima). O estado é relido a cada abertura do painel.
-- **Atualizações**: painel com versão instalada (`1.9.11 (10911)`), versão do engine,
+  nome, Apple ID e assinatura) e os links **Gerenciar assinatura** / **Conta Apple**, que
+  abrem a tela Account oficial (um BACK volta ao painel); sem sessão, mostra o convite e o
+  botão oficial de login do Apple ID (fluxo acima). O estado é relido a cada abertura.
+- **Atualizações**: painel com versão instalada (`1.9.12 (10912)`), versão do engine,
   mensagem de estado, progresso, Verificar / Baixar e instalar / Cancelar / Fechar.
   Compara `one-<abi>.versionCode`, baixa, confere SHA-256 e instala via `PackageInstaller`.
 - **Estados**: vazio, erro e sem conexão com ícone e texto (`EmptyState`) em Início,
@@ -547,6 +551,48 @@ repetir o GET ao alternar de escopo; ENTER duplicado continua virando uma só re
 medido: `daft` e `angra` produziram **um** `amp-api HTTP 200` cada (`wave2c-02`,
 `wave2c-14`).
 
+### CatalogResolver, testes JVM/CI e ações da conta (1.9.12)
+
+**Resolução de nomes num só lugar.** `media/CatalogResolver` reúne o que estava repetido na
+Biblioteca, no “Ver tudo” e na Busca: `lastSegment` (id de browse), `pick` (melhor match por
+título/artista) e a normalização de títulos da biblioteca (“ - Single”/“ - EP”,
+“(Deluxe Version)”/“[Remastered]”), antes privada em `CatalogSearch`. As três resoluções por
+nome (artista/álbum/playlist) devolvem o id de catálogo, a capa com fallback e o *miss*;
+`CollectionScreen` e `LibraryOpener` ficaram só com o fallback que é **deles** (empilhar o
+nível de browse vs. abrir a lista de faixas da biblioteca). `CatalogSearch` continua dono do
+HTTP/JSON; o teste JVM cobre os parsers sem Android. O desenho das faixas já era compartilhado
+(`widget/TrackRow`); não foi extraído um `TrackListView` porque os três usos têm interação
+diferente (fila dá `skipToQueueItem`, detalhe empilha/abre ações, coleção toca a partir da
+faixa) — unificar mudaria comportamento.
+
+**Testes JVM, sem device e sem dependência no APK.** `single-apk/single-ui/test` tem três
+`main`: `UpdateAbisTest` (mapa de ABI do updater, 16 checks), `CatalogResolverTest`
+(normalização/pick/`lastSegment`, 24 checks) e `CatalogSearchTest` (JSON de
+search/album/artist/playlist/tracks, 46 checks). `single-apk/test-single-ui.ps1` compila com
+`javac --release 8` contra `android.jar`, baixa o `org.json` **só para o classpath de teste**
+(verificado por SHA-256) e roda os três. O CI (`build.yml`, job `release`) executa esse script
+antes do build e falha a release se algum teste quebrar. Saída local:
+
+```
+UpdateAbisTest: OK (16 checks)
+CatalogResolverTest: OK (24 checks)
+CatalogSearchTest: OK (46 checks)
+single-ui JVM tests: OK
+```
+
+**Conta com ações.** Com sessão ativa, o painel mostra **Gerenciar assinatura** e **Conta
+Apple**: ambos abrem a tela **Account** oficial do engine com
+`ACTION_VIEW https://itunes.apple.com/accountSummary` no componente
+`com.apple.android.music/.common.MainActivity` (o caminho validado). A tela é um destino de
+navegação dentro da `MainActivity` (`singleTask`), então `OneActivity` observa a activity do
+engine (create/resume) e troca o fallback do dispatcher de BACK do próprio engine para
+`finish()`: **um BACK volta para esta UI**, tanto na chave legada (TV/API 34) quanto no
+predictive back (API 36). Se o engine de outra build não tiver o formato esperado, cai nos
+callbacks de `OnBackInvokedDispatcher` (API 33+). Nada de sign out: o painel continua sem
+editar arquivos de conta. Medido: `account BACK hooked on the engine back dispatcher` →
+`account screen BACK, returning to the UI`; `logcat -b crash` vazio, painel ainda aberto ao
+voltar (`wave2d-account-back-phone.png`, `wave2d-account-back-tv.png`).
+
 ### Rotação e estado (1.9.7)
 
 O manifest do engine não declara `configChanges`, então girar (ou mudar `wm size`)
@@ -669,12 +715,18 @@ Evidências: [`evidence/wave2a-home-before.png`](evidence), `wave2a-home-after.p
 mostra **“Sem atualização para esta ABI. Instalada: …”**. O fallback antigo para
 `one-arm32`/`one-x86` foi removido: num arm64 sem suporte a 32-bit ele oferecia o APK errado.
 
-Teste JVM do mapeamento (fora do APK, sem dependências):
+Teste JVM do mapeamento e dos parsers (fora do APK, sem dependências empacotadas):
 
 ```powershell
-./single-apk/test-update-abis.ps1
+./single-apk/test-single-ui.ps1
 # UpdateAbisTest: OK (16 checks)
+# CatalogResolverTest: OK (24 checks)
+# CatalogSearchTest: OK (46 checks)
+# single-ui JVM tests: OK
 ```
+
+O script baixa o `org.json` só para o classpath de teste (SHA-256 fixo) e é o mesmo passo que
+o CI roda antes do build.
 
 Medido no celular: `updates.json: sem atualização para esta ABI (arm64-v8a, instalada
 1.9.10 (10910))`.
@@ -748,6 +800,18 @@ persistência), `wave2c-11-seeall-albums.png` (“Ver tudo”, 281), e os dumps
 `wave2c-tv-03-library.png`, `wave2c-tv-04-search-library.png`,
 `wave2c-tv-05-search-library-portrait.png`.
 
+Onda 2d (1.9.12, refactor/testes/conta): `wave2d-before-library-phone.png`,
+`wave2d-after-library-phone.png`, `wave2d-before-collection-phone.png`,
+`wave2d-after-collection-phone.png`, `wave2d-before-detail-phone.png`,
+`wave2d-after-detail-phone.png` (mesmas telas antes/depois do `CatalogResolver`),
+`wave2d-before-account-phone.png` / `wave2d-after-account-phone.png` (painel ganhou os
+links), `wave2d-account-manage-phone.png` (tela Account oficial),
+`wave2d-account-back-phone.png` (um BACK de volta ao painel),
+`wave2d-account-apple-phone.png` (link Conta Apple) e `wave2d-account-apple-back-phone.png`;
+TV x86: `wave2d-before/after-library-tv.png`, `wave2d-before/after-collection-tv.png`,
+`wave2d-before/after-detail-tv.png`, `wave2d-after-account-tv.png`,
+`wave2d-account-manage-tv.png`, `wave2d-account-back-tv.png`.
+
 ## Validado
 
 | Device | Resultado |
@@ -777,6 +841,8 @@ persistência), `wave2c-11-seeall-albums.png` (“Ver tudo”, 281), e os dumps
 | `emulator-5554` (TV x86, 1.9.10, backoff) | APK x86 instalado por cima. Com um seam temporário de falha de conexão (removido antes do commit): `reconnect in 500 ms` → `1000 ms` → `2000 ms` → `MediaBrowser connected`/`root arrived`, sem reiniciar a activity (`wave2b-reconnect-backoff-tempbuild.txt`); `logcat -b crash` vazio. |
 | `RXCX100BZ5J` (arm64, 1.9.11, busca/biblioteca) | Instalado por cima (`versionName=1.9.11`, `versionCode=10911`). **Busca**: `daft`/`angra` = um `amp-api HTTP 200` cada; recentes (3 termos) sobreviveram a `force-stop` + reabrir (`wave2c-03/04/13`); escopo **Biblioteca** `angra` → 3 resultados (Artistas 1, Álbuns 2) com **zero** `amp-api HTTP` (`wave2c-07`); girado com o painel aberto → `Biblioteca, selecionado`, termo e resultados preservados (`wave2c-08`); erro com Wi-Fi/dados desligados (“Sem conexão” + **Tentar de novo**) e retry após religar → resposta da amp-api (`wave2c-16/17`); termo aleatório → “Nenhum resultado para …” (`wave2c-15`). **Biblioteca**: contagens 12/18/93/281; **A–Z** ordena Artistas/Álbuns/Playlists e persiste após reiniciar (`wave2c-09/10/12`); **Ver tudo, 281 itens** abre a lista completa com 9 linhas/55 views (`perf collection list items=281 rows=9 views=55`, `wave2c-11`); `logcat -b crash` vazio. |
 | `emulator-5554` (TV x86, 1.9.11, busca/biblioteca) | x86 instalado por cima. Biblioteca com 12/18/93/281 e pills **A–Z/Recentes**; Busca → escopo **Biblioteca** `angra` = 3 resultados (1 artista + 2 álbuns) **sem** `amp-api HTTP` (`wave2c-tv-04`); `wm size 1080x1920` com a busca aberta preservou escopo/termo/resultados (`wave2c-tv-05`); `logcat -b crash` vazio. |
+| `RXCX100BZ5J` (arm64, 1.9.12, refactor/testes/conta) | Instalado por cima (`versionName=1.9.12`, `versionCode=10912`). **Refactor**: Biblioteca, “Ver tudo” e detalhe da playlist `Backstreet Boys: essenciais` idênticos ao build 1.9.11 (`wave2d-before-*` / `wave2d-after-*`); a resolução continua `/br/search?types=playlists` → `/br/playlists/pl.331a…`. **Testes**: `UpdateAbisTest: OK (16)`, `CatalogResolverTest: OK (24)`, `CatalogSearchTest: OK (46)`. **Conta**: **Gerenciar assinatura** e **Conta Apple** abrem a tela Account oficial (deep link + componente); **um** BACK volta ao painel (`account BACK hooked on the engine back dispatcher` → `account screen BACK, returning to the UI`); `logcat -b crash` vazio. |
+| `emulator-5554` (TV x86, 1.9.12, refactor/conta) | x86 instalado por cima. Biblioteca/“Ver tudo”/detalhe iguais (`wave2d-before/after-library|collection|detail-tv.png`); **Gerenciar assinatura** abre a tela Account do engine e **um** BACK volta ao painel (`wave2d-account-manage-tv.png`, `wave2d-account-back-tv.png`); `logcat -b crash` vazio. |
 
 Evidências lado a lado com as referências dos companions
 (`.pipeline/revamp-tv/`, `.pipeline/revamp-car/` e as fotos de celular em
@@ -910,7 +976,7 @@ e `library-20-tv-artist-detail.png`, `library-23-tv-library-album-detail.png` e
   exercitado ponta a ponta (não há release com `one-*`); o caminho “sem atualização”
   (parsing do `updates.json` real) foi validado nos dois devices, agora mostrando
   `Sem atualização para esta ABI` na 1.9.8. A seleção de asset é só pela **ABI primária**
-  (teste JVM em `single-apk/test-update-abis.ps1`); `one-arm32`/`one-x86` não são mais
+  (teste JVM em `single-apk/test-single-ui.ps1`); `one-arm32`/`one-x86` não são mais
   oferecidos como fallback.
 - **Acessibilidade medida por dump**: `uiautomator dump` sem `--compressed` lista também
   views que não são importantes para acessibilidade (comportamento do UiAutomator), então a
@@ -942,6 +1008,11 @@ e `library-20-tv-artist-detail.png`, `library-23-tv-library-album-detail.png` e
 - **Login**: o diálogo AMS é hospedado pela `MainActivity` do engine; a UI o fecha
   (X/BACK/sucesso) ao ver `shouldShowAMSAuthWithType` voltar a `null`. O fluxo de
   senha/2FA do Apple ID não é exercitado automaticamente (a senha não está no repo).
+- **Conta (links e BACK)**: os links usam o dispatcher interno do engine 7.0.0 para fazer
+  um BACK voltar ao painel; se uma build futura mudar o formato das classes/fields, o código
+  cai no fallback de `OnBackInvokedDispatcher` (API 33+) e o BACK pode voltar para a home do
+  engine. Medido em API 34 (TV) e API 36 (celular); **API 29 não exercitada**. Sign out
+  continua ausente por decisão de segurança.
 - **Foco inicial no emulador TV**: o emulador se anuncia como touchscreen; a UI detecta
   `leanback`/`uiMode` television e usa o caminho D-pad. Em devices sem essa flag o foco
   pode cair no modo toque.

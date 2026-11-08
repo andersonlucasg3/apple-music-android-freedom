@@ -5,6 +5,7 @@ import android.app.Application;
 import android.content.Intent;
 import android.content.pm.PackageInstaller;
 import android.content.pm.PackageManager;
+import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
@@ -67,6 +68,9 @@ public final class OneActivity extends Activity
     /** Auth type we ask the engine for: always show the Apple ID page. */
     private static final String AUTH_TYPE_CLASS =
             "com.apple.mediaservices.amskit.authentication.AuthenticateRequest$Type";
+    /** Validated engine deep link: ACTION_VIEW + MainActivity opens its Account screen. */
+    private static final String ACCOUNT_SUMMARY_URL =
+            "https://itunes.apple.com/accountSummary";
     /** Time for the host activity to build its window/ComposeView before we drive it. */
     private static final long SIGN_IN_SETTLE_MS = 400L;
     /** How often the sign-in sheet state is checked while the engine host is on top. */
@@ -133,6 +137,8 @@ public final class OneActivity extends Activity
     private boolean destroyed;
     private boolean refreshingCatalog;
     private Runnable authPoll;
+    private Application.ActivityLifecycleCallbacks accountWatcher;
+    private Runnable accountWatcherTimeout;
     private final Runnable reconnect = new Runnable() {
         @Override
         public void run() {
@@ -1431,6 +1437,148 @@ public final class OneActivity extends Activity
         }
     }
 
+    /**
+     * Account/subscription management lives in the engine. The validated path is
+     * {@code ACTION_VIEW https://itunes.apple.com/accountSummary} on the engine's
+     * {@code MainActivity}. The engine is {@code singleTask}, so an existing instance is
+     * reused and only resumes; the watcher therefore hooks the resume too. Once the
+     * engine screen is up, its BACK is redirected here: the account page is a nav
+     * destination inside the engine's activity, so otherwise BACK would pop to the
+     * engine home instead of returning to this UI.
+     *
+     * <p>The account action is registered from the activity, so it disappears with it.
+     * If the component or the deep link is gone, fall back to the plain engine activity
+     * instead of dead-ending the tap.
+     */
+    @Override
+    public void openAccountSummary() {
+        final Application app = getApplication();
+        clearAccountWatcher(app);
+        final ActivityWatcher watcher = new ActivityWatcher(MediaClient.ACCOUNT_ACTIVITY) {
+            @Override
+            void onTarget(final Activity activity) {
+                clearAccountWatcher(app);
+                // The engine installs its own navigator callback while the Compose screen
+                // settles: hook after it so clearing its callbacks actually removes it.
+                main.postDelayed(new Runnable() {
+                    @Override
+                    public void run() {
+                        if (activity.isFinishing() || activity.isDestroyed()) return;
+                        interceptAccountBack(activity);
+                    }
+                }, 1200L);
+            }
+        };
+        accountWatcher = watcher;
+        app.registerActivityLifecycleCallbacks(watcher);
+        accountWatcherTimeout = new Runnable() {
+            @Override
+            public void run() {
+                Log.w(TAG, "the account screen did not come up");
+                clearAccountWatcher(app);
+            }
+        };
+        main.postDelayed(accountWatcherTimeout, 5000L);
+        try {
+            Intent intent = new Intent(Intent.ACTION_VIEW,
+                    Uri.parse(ACCOUNT_SUMMARY_URL));
+            intent.setClassName(MediaClient.PACKAGE, MediaClient.ACCOUNT_ACTIVITY);
+            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            startActivity(intent);
+        } catch (Throwable t) {
+            clearAccountWatcher(app);
+            Log.w(TAG, "account deep link unavailable, opening the engine home", t);
+            openEngine();
+        }
+    }
+
+    /** One BACK on the engine's account screen returns to this UI, not to the engine home. */
+    private void interceptAccountBack(final Activity host) {
+        boolean hooked = hookEngineBackDispatcher(host);
+        if (Build.VERSION.SDK_INT >= 33) {
+            // Predictive back: an overlay callback wins over the engine's navigator even
+            // when the dispatcher hook above did not run in time.
+            registerAccountBack(host, OnBackInvokedDispatcher.PRIORITY_OVERLAY);
+        } else if (!hooked) {
+            Log.w(TAG, "account BACK redirection needs API 33+");
+        }
+    }
+
+    /**
+     * The account page is a navigation destination inside the engine's own activity, so
+     * its BACK pops to the engine home. The activity's AndroidX back dispatcher is the
+     * only hook that covers both the legacy BACK key (TV/API 34) and predictive back:
+     * replace its fallback with {@code finish()} and clear the engine's callbacks, so any
+     * BACK leaves the account screen instead of navigating inside the engine.
+     *
+     * <p>The dispatcher accessor is the engine's R8-renamed
+     * {@code ComponentActivity.getOnBackPressedDispatcher()} and the field types are
+     * discovered at runtime; if the engine build changes, this returns false and the
+     * OnBackInvoked fallback below takes over.
+     */
+    private boolean hookEngineBackDispatcher(final Activity host) {
+        try {
+            Object dispatcher = host.getClass().getMethod("m0").invoke(host);
+            if (dispatcher == null) return false;
+            boolean hookedFallback = false;
+            boolean clearedCallbacks = false;
+            for (java.lang.reflect.Field field : dispatcher.getClass().getDeclaredFields()) {
+                if (java.lang.reflect.Modifier.isStatic(field.getModifiers())) continue;
+                field.setAccessible(true);
+                Object value = field.get(dispatcher);
+                if (value instanceof Runnable && !hookedFallback) {
+                    field.set(dispatcher, new Runnable() {
+                        @Override
+                        public void run() {
+                            Log.i(TAG, "account screen BACK, returning to the UI");
+                            host.finish();
+                        }
+                    });
+                    hookedFallback = true;
+                } else if (value instanceof java.util.Collection) {
+                    ((java.util.Collection<?>) value).clear();
+                    clearedCallbacks = true;
+                }
+            }
+            if (hookedFallback && clearedCallbacks) {
+                Log.i(TAG, "account BACK hooked on the engine back dispatcher");
+                return true;
+            }
+            Log.w(TAG, "engine back dispatcher has an unexpected shape");
+        } catch (Throwable t) {
+            Log.w(TAG, "cannot hook the engine back dispatcher", t);
+        }
+        return false;
+    }
+
+    private void registerAccountBack(final Activity host, int priority) {
+        try {
+            host.getOnBackInvokedDispatcher().registerOnBackInvokedCallback(
+                    priority,
+                    new OnBackInvokedCallback() {
+                        @Override
+                        public void onBackInvoked() {
+                            Log.i(TAG, "account screen BACK, returning to the UI");
+                            host.finish();
+                        }
+                    });
+            Log.i(TAG, "account BACK registered priority=" + priority + " on " + host);
+        } catch (Throwable t) {
+            Log.w(TAG, "cannot take over the account screen BACK (priority " + priority + ")", t);
+        }
+    }
+
+    private void clearAccountWatcher(Application app) {
+        if (accountWatcherTimeout != null) {
+            main.removeCallbacks(accountWatcherTimeout);
+            accountWatcherTimeout = null;
+        }
+        if (accountWatcher != null) {
+            app.unregisterActivityLifecycleCallbacks(accountWatcher);
+            accountWatcher = null;
+        }
+    }
+
     /** Detects the engine activity we just started so it can be driven by reflection. */
     private abstract static class ActivityWatcher implements Application.ActivityLifecycleCallbacks {
         private final String target;
@@ -1452,6 +1600,8 @@ public final class OneActivity extends Activity
 
         @Override
         public void onActivityResumed(Activity activity) {
+            // The engine activities are singleTask: a reused instance only resumes.
+            if (target.equals(activity.getClass().getName())) onTarget(activity);
         }
 
         @Override
@@ -1662,6 +1812,7 @@ public final class OneActivity extends Activity
         main.removeCallbacks(ticker);
         main.removeCallbacks(reconnect);
         if (authPoll != null) main.removeCallbacks(authPoll);
+        clearAccountWatcher(getApplication());
         disposeTabScreen();
         if (overlayCollection != null) overlayCollection.dispose();
         if (detailScreen != null) detailScreen.dispose();

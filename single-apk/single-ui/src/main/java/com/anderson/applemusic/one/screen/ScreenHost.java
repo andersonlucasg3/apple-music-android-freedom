@@ -65,6 +65,9 @@ public interface ScreenHost {
 
     void openAccount();
 
+    /** Opens the engine's official account/subscription screen. */
+    void openAccountSummary();
+
     void openUpdates();
 
     void openPlayer();

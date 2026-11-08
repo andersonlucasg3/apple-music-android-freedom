@@ -16,6 +16,7 @@ import android.widget.ScrollView;
 import android.widget.TextView;
 
 import com.anderson.applemusic.one.media.ArtworkLoader;
+import com.anderson.applemusic.one.media.CatalogResolver;
 import com.anderson.applemusic.one.media.CatalogSearch;
 import com.anderson.applemusic.one.media.MediaClient;
 import com.anderson.applemusic.one.theme.Inter;
@@ -83,6 +84,7 @@ public class CollectionScreen implements ChildSink {
     protected final ScreenHost host;
     protected final ArtworkLoader artwork;
     protected final CatalogSearch catalog;
+    private final CatalogResolver resolver;
 
     private final int mode;
     private final int emptyIcon;
@@ -117,6 +119,7 @@ public class CollectionScreen implements ChildSink {
         this.host = host;
         this.artwork = artwork;
         this.catalog = catalog;
+        this.resolver = new CatalogResolver(catalog);
         this.mode = mode;
         this.emptyIcon = emptyIcon;
 
@@ -723,18 +726,12 @@ public class CollectionScreen implements ChildSink {
 
     // --- hierarchy ----------------------------------------------------------------
 
-    /** Last segment of a browse id: the library entity type and its persistent id. */
-    private static String lastSegment(String id) {
-        int slash = id.lastIndexOf('/');
-        return slash < 0 ? id : id.substring(slash + 1);
-    }
-
     /**
      * True when the row opens another level: browsable nodes, and the library rows whose
      * id is an artist ("6-"), album ("3-") or playlist ("4-") persistent id.
      */
     private static boolean drills(MediaClient.Item item) {
-        String last = lastSegment(item.id);
+        String last = CatalogResolver.lastSegment(item.id);
         return item.browsable
                 || (item.id.contains("/library/") && last.startsWith("6-"))
                 || last.startsWith("3-")
@@ -742,7 +739,7 @@ public class CollectionScreen implements ChildSink {
     }
 
     private void choose(MediaClient.Item item) {
-        String last = lastSegment(item.id);
+        String last = CatalogResolver.lastSegment(item.id);
         boolean library = item.id.contains("/library/");
         // Catalogue ids (Home/Rádio shelves) open the detail stack; library ids carry only
         // the persistent id, so they resolve the catalogue id by name and open the same
@@ -786,16 +783,15 @@ public class CollectionScreen implements ChildSink {
     private void resolveArtist(final MediaClient.Item item) {
         final Node source = top();
         host.status("Abrindo " + item.title + "…");
-        catalog.findArtist(item.title, new CatalogSearch.MatchCallback() {
+        resolver.artist(item.title, item.artworkUri, new CatalogResolver.Match() {
             @Override
-            public void onMatch(CatalogSearch.Result match) {
+            public void onMatch(String id, String artworkUrl) {
                 if (top() != source) return;
-                host.openArtist(match.id, item.title,
-                        match.artworkUrl != null ? match.artworkUrl : item.artworkUri);
+                host.openArtist(id, item.title, artworkUrl);
             }
 
             @Override
-            public void onFailure(String message) {
+            public void onMiss(String message) {
                 if (top() != source) return;
                 host.status("");
                 push(new Node(item.id, item.title, item.subtitle, BROWSE, null));
@@ -807,16 +803,15 @@ public class CollectionScreen implements ChildSink {
     private void resolveAlbum(final MediaClient.Item item) {
         final Node source = top();
         host.status("Abrindo " + item.title + "…");
-        catalog.findAlbumMatch(item.title, item.subtitle, new CatalogSearch.MatchCallback() {
+        resolver.album(item.title, item.subtitle, item.artworkUri, new CatalogResolver.Match() {
             @Override
-            public void onMatch(CatalogSearch.Result match) {
+            public void onMatch(String id, String artworkUrl) {
                 if (top() != source) return;
-                host.openAlbum(match.id, item.title, item.subtitle,
-                        match.artworkUrl != null ? match.artworkUrl : item.artworkUri);
+                host.openAlbum(id, item.title, item.subtitle, artworkUrl);
             }
 
             @Override
-            public void onFailure(String message) {
+            public void onMiss(String message) {
                 if (top() != source) return;
                 host.status("");
                 push(new Node(item.id, item.title, item.subtitle, ALBUM, null));
@@ -828,18 +823,16 @@ public class CollectionScreen implements ChildSink {
     private void resolvePlaylist(final MediaClient.Item item) {
         final Node source = top();
         host.status("Abrindo " + item.title + "…");
-        catalog.findPlaylistMatch(item.title, item.subtitle,
-                new CatalogSearch.MatchCallback() {
+        resolver.playlist(item.title, item.subtitle, item.artworkUri,
+                new CatalogResolver.Match() {
                     @Override
-                    public void onMatch(CatalogSearch.Result match) {
+                    public void onMatch(String id, String artworkUrl) {
                         if (top() != source) return;
-                        host.openPlaylist(match.id, item.title, item.subtitle,
-                                match.artworkUrl != null ? match.artworkUrl
-                                        : item.artworkUri);
+                        host.openPlaylist(id, item.title, item.subtitle, artworkUrl);
                     }
 
                     @Override
-                    public void onFailure(String message) {
+                    public void onMiss(String message) {
                         if (top() != source) return;
                         host.status("");
                         push(new Node(item.id, item.title, item.subtitle, PLAYLIST, null));

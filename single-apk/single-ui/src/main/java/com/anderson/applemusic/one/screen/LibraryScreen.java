@@ -21,6 +21,7 @@ import android.widget.ScrollView;
 import android.widget.TextView;
 
 import com.anderson.applemusic.one.media.ArtworkLoader;
+import com.anderson.applemusic.one.media.CatalogResolver;
 import com.anderson.applemusic.one.media.CatalogSearch;
 import com.anderson.applemusic.one.media.MediaClient;
 import com.anderson.applemusic.one.theme.Inter;
@@ -887,14 +888,8 @@ public final class LibraryScreen implements ChildSink {
         return null;
     }
 
-    private static String lastSegment(String id) {
-        if (id == null) return "";
-        int slash = id.lastIndexOf('/');
-        return slash < 0 ? id : id.substring(slash + 1);
-    }
-
     private static int kindOf(String id) {
-        String last = lastSegment(id).toLowerCase(Locale.ROOT);
+        String last = CatalogResolver.lastSegment(id).toLowerCase(Locale.ROOT);
         if (last.equals("songs") || last.equals("random")) return KIND_RANDOM;
         if (last.equals("recently_added")) return KIND_RECENT;
         if (last.equals("playlists")) return KIND_PLAYLISTS;

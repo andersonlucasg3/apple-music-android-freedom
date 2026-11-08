@@ -108,10 +108,12 @@ public final class AccountScreen {
             addField("APPLE ID", profile.email);
         }
         addField("ASSINATURA", profile.subscription);
+        addAccountLink("Gerenciar assinatura");
+        addAccountLink("Conta Apple");
 
         TextView hint = Inter.text(context,
-                "O painel usa a conta que o Apple Music já tem. Sair da conta não é feito "
-                        + "por este painel.",
+                "Gerenciar assinatura e Conta Apple abrem a tela oficial do Apple Music. "
+                        + "Sair da conta não é feito por este painel.",
                 Tokens.CAPTION, Inter.REGULAR, Tokens.TEXT_DIM);
         hint.setGravity(Gravity.CENTER);
         hint.setLineSpacing(Tokens.dp(3), 1f);
@@ -135,6 +137,21 @@ public final class AccountScreen {
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
         valueParams.topMargin = Tokens.dp(3);
         panel.addView(valueView, valueParams);
+    }
+
+    /** Opens the engine's official account screen (subscription/account management). */
+    private void addAccountLink(String label) {
+        Pill link = Pill.surface(context, 0, label);
+        link.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                host.openAccountSummary();
+            }
+        });
+        LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        params.topMargin = Tokens.dp(10);
+        panel.addView(link, params);
     }
 
     private void addSignedOut() {
