@@ -22,14 +22,16 @@ public final class ScrollMemory {
 
     public static void save(Bundle out, String key, ScrollView scroll) {
         if (out == null || scroll == null) return;
+        out.putFloat(key, fraction(scroll));
+    }
+
+    /** Current position as a fraction of the scroll range (0 when there is no range yet). */
+    public static float fraction(ScrollView scroll) {
+        if (scroll == null) return 0f;
         View content = scroll.getChildAt(0);
         int range = content == null ? 0 : content.getHeight() - scroll.getHeight();
-        if (range <= 0) {
-            out.putFloat(key, 0f);
-            return;
-        }
-        float fraction = scroll.getScrollY() / (float) range;
-        out.putFloat(key, Math.max(0f, Math.min(1f, fraction)));
+        if (range <= 0) return 0f;
+        return Math.max(0f, Math.min(1f, scroll.getScrollY() / (float) range));
     }
 
     public static void restore(final ScrollView scroll, final float fraction) {

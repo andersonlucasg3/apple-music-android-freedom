@@ -343,6 +343,22 @@ public final class MediaClient {
         return cache.get(parentId);
     }
 
+    /**
+     * Drops the cached children and the live subscription of {@code parentId}, so the next
+     * {@link #subscribe} asks the engine again (explicit "Atualizar" on Início).
+     */
+    public synchronized void invalidate(String parentId) {
+        cache.remove(parentId);
+        MediaBrowser.SubscriptionCallback old = callbacks.remove(parentId);
+        if (old != null && browser != null) {
+            try {
+                browser.unsubscribe(parentId);
+            } catch (Throwable ignored) {
+                // The browser/service may already be gone; the new subscribe re-registers.
+            }
+        }
+    }
+
     private synchronized void deliver(String parentId, List<MediaBrowser.MediaItem> children) {
         final List<Item> items = new ArrayList<Item>(children.size());
         for (MediaBrowser.MediaItem child : children) {

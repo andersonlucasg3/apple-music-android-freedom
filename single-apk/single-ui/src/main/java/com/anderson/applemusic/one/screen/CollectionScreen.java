@@ -1,13 +1,17 @@
 package com.anderson.applemusic.one.screen;
 
 import android.content.Context;
+import android.graphics.drawable.ColorDrawable;
 import android.os.Bundle;
 import android.text.TextUtils;
+import android.util.Log;
 import android.view.Gravity;
 import android.view.View;
 import android.view.ViewGroup;
+import android.widget.BaseAdapter;
 import android.widget.FrameLayout;
 import android.widget.LinearLayout;
+import android.widget.ListView;
 import android.widget.ScrollView;
 import android.widget.TextView;
 
@@ -21,6 +25,7 @@ import com.anderson.applemusic.one.widget.CoverCard;
 import com.anderson.applemusic.one.widget.EmptyState;
 import com.anderson.applemusic.one.widget.Icons;
 import com.anderson.applemusic.one.widget.ListRow;
+import com.anderson.applemusic.one.widget.Perf;
 import com.anderson.applemusic.one.widget.Pill;
 import com.anderson.applemusic.one.widget.ScrollMemory;
 import com.anderson.applemusic.one.widget.Skeleton;
@@ -85,14 +90,18 @@ public class CollectionScreen implements ChildSink {
     private final CircleButton back;
     private final TextView titleView;
     private final TextView subtitleView;
+    private final FrameLayout contentHost;
+    /** Grid/skeleton/empty content; the list levels use {@link #list} instead. */
     private final LinearLayout column;
     private final ScrollView scroll;
     private final Pill playAll;
+    /** Recycled list used by LIST levels (the 281-album "Ver tudo" and track lists). */
+    private ListView list;
+    private RowAdapter adapter;
+    private int pendingListPosition;
+    private int pendingListTop;
+    private boolean pendingListScroll;
     private final List<Node> stack = new ArrayList<Node>();
-    /** Track rows of the current node, when the node is a track list, with their media ids. */
-    private final List<TrackRow> trackRows = new ArrayList<TrackRow>();
-    private final List<String> trackIds = new ArrayList<String>();
-    private final List<String> trackTitles = new ArrayList<String>();
     private Skeleton skeleton;
     private String failedId;
     private boolean exitOnRootBack;
@@ -169,7 +178,7 @@ public class CollectionScreen implements ChildSink {
         page.addView(header, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
 
-        FrameLayout contentHost = new FrameLayout(context);
+        contentHost = new FrameLayout(context);
         scroll = new ScrollView(context);
         scroll.setFillViewport(true);
         column = new LinearLayout(context);
@@ -240,7 +249,13 @@ public class CollectionScreen implements ChildSink {
         out.putStringArray(prefix + ".subtitles", subtitles);
         out.putStringArray(prefix + ".directs", directs);
         out.putIntArray(prefix + ".kinds", kinds);
-        ScrollMemory.save(out, prefix + ".scroll", scroll);
+        if (list != null && list.getVisibility() == View.VISIBLE) {
+            out.putInt(prefix + ".list.pos", list.getFirstVisiblePosition());
+            View first = list.getChildAt(0);
+            out.putInt(prefix + ".list.top", first == null ? 0 : first.getTop());
+        } else {
+            ScrollMemory.save(out, prefix + ".scroll", scroll);
+        }
     }
 
     /** Rebuilds the saved stack and reloads only its top level; false when nothing to do. */
@@ -264,6 +279,9 @@ public class CollectionScreen implements ChildSink {
             stack.add(new Node(ids[i], titles[i], subtitles[i], kinds[i], directs[i]));
         }
         pendingScroll = in.getFloat(prefix + ".scroll", 0f);
+        pendingListPosition = in.getInt(prefix + ".list.pos", 0);
+        pendingListTop = in.getInt(prefix + ".list.top", 0);
+        pendingListScroll = pendingListPosition > 0 || pendingListTop != 0;
         render();
         return true;
     }
@@ -312,20 +330,24 @@ public class CollectionScreen implements ChildSink {
 
     private void showLoading() {
         stopSkeleton();
+        showScrollContent();
         column.removeAllViews();
         clearTrackRows();
-        trackList = false;
         playAll.setVisibility(View.GONE);
         skeleton = Skeleton.rows(context, 6);
         column.addView(skeleton, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
     }
 
+    /** Grid rows, skeletons and empty states live in the ScrollView; lists use ListView. */
+    private void showScrollContent() {
+        scroll.setVisibility(View.VISIBLE);
+        if (list != null) list.setVisibility(View.GONE);
+    }
+
     private void clearTrackRows() {
-        trackRows.clear();
-        trackIds.clear();
-        trackTitles.clear();
         trackList = false;
+        adapter = null;
     }
 
     private void stopSkeleton() {
@@ -338,6 +360,13 @@ public class CollectionScreen implements ChildSink {
 
     /** Puts the scroll back where it was before the rotation, once the level is in. */
     private void applyPendingScroll() {
+        if (list != null && list.getVisibility() == View.VISIBLE) {
+            if (pendingListScroll) {
+                list.setSelectionFromTop(pendingListPosition, pendingListTop);
+                pendingListScroll = false;
+            }
+            return;
+        }
         if (pendingScroll <= 0f) return;
         ScrollMemory.restore(scroll, pendingScroll);
         pendingScroll = 0f;
@@ -350,6 +379,7 @@ public class CollectionScreen implements ChildSink {
         Node node = top();
         if (node == null || node.kind != BROWSE || !parentId.equals(node.id)) return;
         stopSkeleton();
+        showScrollContent();
         column.removeAllViews();
         clearTrackRows();
         if (children.isEmpty()) {
@@ -366,7 +396,7 @@ public class CollectionScreen implements ChildSink {
         if (mode == GRID) {
             addGrid(children);
         } else {
-            addList(children);
+            showList(children, node, false);
         }
         updatePlayback(host.nowPlaying());
         applyPendingScroll();
@@ -397,14 +427,11 @@ public class CollectionScreen implements ChildSink {
      * (or, when the queue has no media id, whose title) matches the session metadata.
      */
     public void updatePlayback(MediaClient.Snapshot snapshot) {
-        if (snapshot == null || trackRows.isEmpty()) return;
-        for (int i = 0; i < trackRows.size(); i++) {
-            String mediaId = trackIds.get(i);
-            boolean playing = mediaId.length() > 0
-                    ? mediaId.equals(snapshot.mediaId)
-                    : trackTitles.get(i).equalsIgnoreCase(snapshot.title);
-            trackRows.get(i).setPlaying(playing);
-        }
+        if (snapshot == null || adapter == null || !trackList) return;
+        int index = adapter.indexOfPlaying(snapshot);
+        if (index == adapter.playing) return;
+        adapter.playing = index;
+        adapter.notifyDataSetChanged();
     }
 
     @Override
@@ -412,6 +439,7 @@ public class CollectionScreen implements ChildSink {
         Node node = top();
         if (node == null || node.kind != BROWSE || !parentId.equals(node.id)) return;
         stopSkeleton();
+        showScrollContent();
         column.removeAllViews();
         failedId = parentId;
         EmptyState failure = new EmptyState(context, Icons.CLOSE, "Não foi possível carregar",
@@ -472,6 +500,7 @@ public class CollectionScreen implements ChildSink {
 
     private void renderRemote(Node node) {
         stopSkeleton();
+        showScrollContent();
         column.removeAllViews();
         clearTrackRows();
         playAll.setVisibility(View.VISIBLE);
@@ -490,31 +519,12 @@ public class CollectionScreen implements ChildSink {
         trackList = true;
         subtitleView.setText(node.items.size() + " faixas");
         host.status("");
-        final Node current = node;
-        for (int i = 0; i < node.items.size(); i++) {
-            final CatalogSearch.Result item = node.items.get(i);
-            final int index = i;
-            TrackRow track = new TrackRow(context, i + 1, item.title, item.artist);
-            track.setOnClickListener(new View.OnClickListener() {
-                @Override
-                public void onClick(View v) {
-                    if (current.catalogId == null) {
-                        host.status("Toque em Tocar para ouvir esta coleção");
-                        return;
-                    }
-                    host.playCollectionFrom(current.catalogId, current.title, index,
-                            new MediaClient.Item(item.id, item.title, item.artist, null,
-                                    false, true));
-                }
-            });
-            trackRows.add(track);
-            trackIds.add(item.id);
-            trackTitles.add(item.title);
-            LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(
-                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-            params.bottomMargin = Tokens.dp(2);
-            column.addView(track, params);
+        List<MediaClient.Item> items = new ArrayList<MediaClient.Item>(node.items.size());
+        for (CatalogSearch.Result item : node.items) {
+            items.add(new MediaClient.Item(item.id, item.title, item.artist,
+                    item.artworkUrl, false, true));
         }
+        showList(items, node, true);
         updatePlayback(host.nowPlaying());
         applyPendingScroll();
     }
@@ -535,53 +545,142 @@ public class CollectionScreen implements ChildSink {
         return new EmptyState(context, emptyIcon, title, message);
     }
 
-    private void addList(List<MediaClient.Item> items) {
-        final Node node = top();
-        for (int i = 0; i < items.size(); i++) {
-            final MediaClient.Item item = items.get(i);
-            final int index = i;
-            View row;
-            if (trackList) {
-                TrackRow track = new TrackRow(context, i + 1, item.title, item.subtitle);
-                track.setOnClickListener(new View.OnClickListener() {
-                    @Override
-                    public void onClick(View v) {
-                        host.playCollectionFrom(node.id, node.title, index, item);
-                    }
-                });
-                track.setOnLongClickListener(new View.OnLongClickListener() {
-                    @Override
-                    public boolean onLongClick(View v) {
-                        host.itemActions(item);
-                        return true;
-                    }
-                });
-                trackRows.add(track);
-                trackIds.add(item.id);
-                trackTitles.add(item.title);
-                row = track;
-            } else {
-                ListRow listRow = new ListRow(context, artwork, item.title, item.subtitle,
-                        item.artworkUri, drills(item));
-                listRow.setOnClickListener(new View.OnClickListener() {
-                    @Override
-                    public void onClick(View v) {
-                        choose(item);
-                    }
-                });
-                listRow.setOnLongClickListener(new View.OnLongClickListener() {
-                    @Override
-                    public boolean onLongClick(View v) {
-                        host.itemActions(item);
-                        return true;
-                    }
-                });
-                row = listRow;
+    /** Real list level: ListView + adapter, so 281 albums only inflate the visible rows. */
+    private void showList(List<MediaClient.Item> items, Node node, boolean remote) {
+        scroll.setVisibility(View.GONE);
+        column.removeAllViews();
+        if (list == null) {
+            list = new ListView(context);
+            list.setDivider(new ColorDrawable(0x00000000));
+            list.setSelector(android.R.color.transparent);
+            list.setItemsCanFocus(true);
+            list.setFocusable(true);
+            list.setClipToPadding(false);
+            list.setPadding(Tokens.dp(16), Tokens.dp(4), Tokens.dp(16), Tokens.dp(24));
+            list.setLayoutParams(new FrameLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+            contentHost.addView(list);
+        }
+        list.setDividerHeight(Tokens.dp(trackList ? 2 : 8));
+        list.setVisibility(View.VISIBLE);
+        adapter = new RowAdapter(node, items, trackList, remote);
+        list.setAdapter(adapter);
+        if (pendingListScroll) {
+            list.setSelectionFromTop(pendingListPosition, pendingListTop);
+            pendingListScroll = false;
+        } else {
+            list.setSelection(0);
+        }
+        final int total = items.size();
+        list.post(new Runnable() {
+            @Override
+            public void run() {
+                Log.i("AppleMusicOne", "perf collection list items=" + total
+                        + " rows=" + list.getChildCount() + " views=" + Perf.views(list));
             }
-            LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(
-                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-            params.bottomMargin = Tokens.dp(trackList ? 2 : 8);
-            column.addView(row, params);
+        });
+    }
+
+    /** Row recycling for both flavours of list: collections (ListRow) and tracks (TrackRow). */
+    private final class RowAdapter extends BaseAdapter {
+
+        private final Node node;
+        private final List<MediaClient.Item> items;
+        private final boolean tracks;
+        private final boolean remote;
+        private int playing = -1;
+
+        RowAdapter(Node node, List<MediaClient.Item> items, boolean tracks, boolean remote) {
+            this.node = node;
+            this.items = items;
+            this.tracks = tracks;
+            this.remote = remote;
+        }
+
+        @Override
+        public int getCount() {
+            return items.size();
+        }
+
+        @Override
+        public Object getItem(int position) {
+            return items.get(position);
+        }
+
+        @Override
+        public long getItemId(int position) {
+            return position;
+        }
+
+        int indexOfPlaying(MediaClient.Snapshot snapshot) {
+            for (int i = 0; i < items.size(); i++) {
+                MediaClient.Item item = items.get(i);
+                boolean match = item.id.length() > 0
+                        ? item.id.equals(snapshot.mediaId)
+                        : item.title.equalsIgnoreCase(snapshot.title);
+                if (match) return i;
+            }
+            return -1;
+        }
+
+        @Override
+        public View getView(int position, View convertView, ViewGroup parent) {
+            final int index = position;
+            final MediaClient.Item item = items.get(position);
+            if (tracks) {
+                TrackRow row = convertView instanceof TrackRow
+                        ? (TrackRow) convertView : new TrackRow(context, index + 1, "", "");
+                row.bind(index + 1, item.title, item.subtitle);
+                row.setPlaying(index == playing);
+                row.setOnClickListener(new View.OnClickListener() {
+                    @Override
+                    public void onClick(View v) {
+                        playTrack(index);
+                    }
+                });
+                row.setOnLongClickListener(remote ? null : new View.OnLongClickListener() {
+                    @Override
+                    public boolean onLongClick(View v) {
+                        host.itemActions(item);
+                        return true;
+                    }
+                });
+                return row;
+            }
+            ListRow row = convertView instanceof ListRow
+                    ? (ListRow) convertView
+                    : new ListRow(context, artwork, "", "", null, false);
+            row.bind(artwork, item.title, item.subtitle, item.artworkUri, drills(item));
+            row.setOnClickListener(new View.OnClickListener() {
+                @Override
+                public void onClick(View v) {
+                    choose(item);
+                }
+            });
+            row.setOnLongClickListener(new View.OnLongClickListener() {
+                @Override
+                public boolean onLongClick(View v) {
+                    host.itemActions(item);
+                    return true;
+                }
+            });
+            return row;
+        }
+    }
+
+    private void playTrack(int index) {
+        MediaClient.Item item = adapter == null ? null : (MediaClient.Item) adapter.getItem(index);
+        if (item == null) return;
+        Node node = top();
+        if (node == null) return;
+        if (adapter.remote) {
+            if (node.catalogId == null) {
+                host.status("Toque em Tocar para ouvir esta coleção");
+                return;
+            }
+            host.playCollectionFrom(node.catalogId, node.title, index, item);
+        } else {
+            host.playCollectionFrom(node.id, node.title, index, item);
         }
     }
 

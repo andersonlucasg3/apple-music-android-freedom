@@ -548,6 +548,49 @@ Verificação com `uiautomator dump --compressed`, que é a árvore de acessibil
 Dumps e screenshots em [`evidence/wave1c-*`](evidence) (`wave1c-player.xml`,
 `wave1c-actions.xml`, `wave1c-queue.xml`, `wave1c-tv-*`, `wave1c-*-compressed.xml`).
 
+### Performance: listas recicladas e Início sob demanda (1.9.9)
+
+As listas que crescem com a conta deixaram de inflar todas as linhas: `CollectionScreen`
+(níveis LIST, inclusive os **281 álbuns**), os resultados do filtro da Biblioteca e a fila
+“A seguir” do player passaram a usar `ListView` + `BaseAdapter` com `convertView` e
+`bind` (`ListRow.bind`, `TrackRow.bind`). A Home passou a assinar só as **6 primeiras
+prateleiras**; as demais entram em lotes de 6 quando a rolagem chega perto do fim ou pelo
+pill **Carregar mais**. O pill **Atualizar** invalida o cache do nó (`MediaClient.invalidate`
+→ `ScreenHost.refreshChildren`), reassina o root e as prateleiras já abertas e reaplica a
+fração de scroll.
+
+`widget/Perf` conta a árvore de views; cada tela loga `perf …`:
+
+| Tela | 1.9.8 (antes) | 1.9.9 (depois) |
+|---|---|---|
+| Início (root com 16 prateleiras) | 16 `children` de uma vez; **1365** views | **6** `children`; **563** views; 12/16 ao rolar (lotes de 6) |
+| Biblioteca → Álbuns (`Ver tudo`, 281 itens) | **1680** views num `LinearLayout` | 9 linhas visíveis; **55** views (`perf collection list items=281 rows=9 views=55`) |
+| Filtro da Biblioteca (282 resultados) | **2123** views para 351 resultados | 7 linhas visíveis; **41** views (`perf library results=282 rows=7 views=41`) |
+| Fila “A seguir” (29 faixas) | **361** views para 60 faixas | 5 linhas visíveis; **31** views (`perf queue items=29 rows=5 views=31`) |
+
+- **Rolagem**: `dumpsys gfxinfo` na lista de 281, 12–15 swipes → **2 quadros janky em 878
+  (0,23%)** e **2 em 1099 (0,18%)**; `logcat -b crash` vazio.
+- **Memória**: abrir a lista de 281 com a Home carregada: **TOTAL PSS 729 MB** (1.9.8) →
+  **339 MB** (1.9.9); **483 MB** depois de rolar a lista inteira (capas novas no
+  `LruCache` de 24 MB). Home inicial: 273 MB → **236 MB**.
+- **Refresh**: “Atualizar” com a Home rolada (~hero cortada) repovoa e **mantém a posição**
+  (`wave2a-refresh-scroll-after.png`, mesmo enquadramento do antes).
+- **Rotação**: Início volta na mesma aba/posição (`tab=0 (restored)`, `requested=6`); a
+  lista de 281 volta no mesmo bloco (Bita/Black Pantera) porque `CollectionScreen` salva
+  `firstVisiblePosition` + topo da linha, não uma fração do `ScrollView`.
+- **Grade**: a Rádio continua no `ScrollView` em grade. O `GridView` do framework **não
+  expõe `setItemsCanFocus`**; sem isso o D-pad perderia o foco por card (regressão de TV) e
+  a grade tem só 10 estações — o custo não justifica trocar.
+- **D-pad**: Início mantém DOWN da aba → hero → cards (o pill Atualizar fica depois da
+  hero); percorrer os cards carrega os lotes; na lista de 281 DOWN foca a linha e ENTER
+  abre o álbum; na fila o foco inicia na linha atual e ENTER faz `skipToQueueItem`.
+
+Evidências: [`evidence/wave2a-home-before.png`](evidence), `wave2a-home-after.png`,
+`wave2a-albums-before.png`, `wave2a-albums-after.png`, `wave2a-albums-scroll-after.png`,
+`wave2a-queue-before.png`, `wave2a-queue-after.png`, `wave2a-library-filter-before.png`,
+`wave2a-library-filter-after.png`, `wave2a-refresh-scroll-after.png`,
+`wave2a-rotate-home-after.png`, `wave2a-albums-rotate-after.png`, `wave2a-tv-*.png`.
+
 ### Updater: ABI estrita (1.9.8)
 
 `UpdateAbis` (classe Java pura, sem `android.*`) mapeia a **ABI primária**
@@ -589,6 +632,8 @@ Medido no celular: `updates.json: sem atualização para esta ABI (arm64-v8a, in
 | `emulator-5554` (TV x86, 1.9.7, `wm size`) | Instalado por cima. Rotação simulada com `wm size 1080x1920` / `1920x1080` / `reset`: **Início** `tab=0 (restored)` com as prateleiras e o foco do D-pad (`wave1b-tv-01/02`); **player** aberto na janela “retrato” e voltando lado a lado no landscape com a posição seguindo (0:10 → 0:28, `wave1b-tv-03/04`); **Biblioteca** com filtro `backstreet` (1 resultado) e `wm size` para “retrato”: `tab=2 (restored)` e `backstreet`/`Backstreet Boys Essentials` preservados (`wave1b-tv-05/06`); `logcat -b crash` vazio. |
 | `RXCX100BZ5J` (arm64, 1.9.8, a11y/updater) | Instalado por cima. Player aberto e pausado: `uiautomator dump --compressed` com **22 nós / 10 clicáveis, 0 sem rótulo** e nenhum nó da tela de baixo; **Ações** com **14/5, 0 sem rótulo** e nenhum controle do player; **Fila** 35/9, 0 sem rótulo e página do player fora da árvore; girado em landscape com a fila aberta: `queue sheet restored (35 tracks)` e a árvore continuou só com a fila; Início/Biblioteca/Busca/Detalhe/Coleção/Rádio com 0 clicáveis sem rótulo; **Atualizações** mostra “Sem atualização para esta ABI. Instalada: 1.9.8 (10908)” e o log `updates.json: sem atualização para esta ABI (arm64-v8a, instalada 1.9.8 (10908))`; `logcat -b crash` vazio. |
 | `emulator-5554` (TV x86, 1.9.8, a11y) | Instalado por cima. Player e **Ações** com **22/10** e **14/5** nós/clicáveis, **0 sem rótulo** e nenhuma camada de baixo exposta; Início com 14 clicáveis, todos rotulados; `logcat -b crash` vazio. |
+| `RXCX100BZ5J` (arm64, 1.9.9, performance) | Instalado por cima. Início abre com **6/16** prateleiras (`children` 6, `perf home shelves=6/16 … views=563`); rolar carrega 12 e 16 em lotes; **Atualizar** com a Home rolada repovoa e mantém o enquadramento (`wave2a-refresh-scroll-after.png`); **Biblioteca → Álbuns** (281) rola em `ListView` com 9 linhas/55 views e `gfxinfo` 0,23% janky; filtro `a` (282) com 7 linhas/41 views; girado para landscape e de volta no mesmo bloco da lista; `logcat -b crash` vazio. |
+| `emulator-5554` (TV x86, 1.9.9, performance/D-pad) | Instalado por cima. Início **6/16** e DOWN pelos cards carrega os lotes até 16; DOWN da aba → hero → cards; lista de 281 com 7 linhas e foco por linha (ENTER abre “A Decade and a Half”); fila com 29 faixas/5 linhas/31 views, foco na linha atual e ENTER = `skipToQueueItem 1` (metadata `Rulers of the Mind`); `logcat -b crash` vazio. |
 
 Evidências lado a lado com as referências dos companions
 (`.pipeline/revamp-tv/`, `.pipeline/revamp-car/` e as fotos de celular em

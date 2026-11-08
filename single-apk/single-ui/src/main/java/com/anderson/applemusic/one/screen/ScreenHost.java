@@ -11,6 +11,9 @@ public interface ScreenHost {
 
     void loadChildren(String parentId, ChildSink sink);
 
+    /** Drops the cached children and re-subscribes, for an explicit refresh. */
+    void refreshChildren(String parentId, ChildSink sink);
+
     void forgetChildren(ChildSink sink);
 
     void play(MediaClient.Item item);

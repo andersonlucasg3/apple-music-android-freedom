@@ -738,6 +738,22 @@ public final class OneActivity extends Activity
     }
 
     @Override
+    public void refreshChildren(final String parentId, ChildSink sink) {
+        // Explicit refresh: replace the subscribers of this node and ask the engine again
+        // instead of answering from the cache.
+        List<ChildSink> sinks = new ArrayList<ChildSink>();
+        sinks.add(sink);
+        pending.put(parentId, sinks);
+        loader.execute(new Runnable() {
+            @Override
+            public void run() {
+                client.invalidate(parentId);
+                client.subscribe(parentId);
+            }
+        });
+    }
+
+    @Override
     public void forgetChildren(ChildSink sink) {
         List<String> drop = new ArrayList<String>();
         for (Map.Entry<String, List<ChildSink>> entry : pending.entrySet()) {

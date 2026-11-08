@@ -1,17 +1,21 @@
 package com.anderson.applemusic.one.screen;
 
 import android.content.Context;
+import android.graphics.drawable.ColorDrawable;
 import android.os.Bundle;
 import android.text.Editable;
 import android.text.TextUtils;
 import android.text.TextWatcher;
+import android.util.Log;
 import android.view.Gravity;
 import android.view.View;
 import android.view.ViewGroup;
+import android.widget.BaseAdapter;
 import android.widget.EditText;
 import android.widget.FrameLayout;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
+import android.widget.ListView;
 import android.widget.ScrollView;
 import android.widget.TextView;
 
@@ -28,6 +32,7 @@ import com.anderson.applemusic.one.widget.Focus;
 import com.anderson.applemusic.one.widget.IconView;
 import com.anderson.applemusic.one.widget.Icons;
 import com.anderson.applemusic.one.widget.ListRow;
+import com.anderson.applemusic.one.widget.Perf;
 import com.anderson.applemusic.one.widget.Pill;
 import com.anderson.applemusic.one.widget.ScrollMemory;
 import com.anderson.applemusic.one.widget.SectionHeader;
@@ -91,11 +96,14 @@ public final class LibraryScreen implements ChildSink {
     private final EditText input;
     private final CircleButton clear;
     private final ScrollView scroll;
+    private final FrameLayout contentHost;
     private final LinearLayout body;
     private final List<Category> categories = new ArrayList<Category>();
 
     private LinearLayout page;
-    private LinearLayout results;
+    /** Recycled list of filter results; the section shelves stay in {@link #scroll}. */
+    private ListView resultsList;
+    private ResultAdapter resultAdapter;
     private Skeleton skeleton;
     private String rootId;
     private String rootTitle = "Biblioteca";
@@ -201,7 +209,7 @@ public final class LibraryScreen implements ChildSink {
         outer.addView(searchRow, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
 
-        FrameLayout contentHost = new FrameLayout(context);
+        contentHost = new FrameLayout(context);
         scroll = new ScrollView(context);
         scroll.setFillViewport(true);
         body = new LinearLayout(context);
@@ -262,7 +270,8 @@ public final class LibraryScreen implements ChildSink {
         titleView.setText(rootTitle);
         categories.clear();
         page = null;
-        results = null;
+        resultAdapter = null;
+        if (resultsList != null) resultsList.setVisibility(View.GONE);
         // The local filter is part of the state: restore it (and its results) after a
         // rotation instead of showing the unfiltered sections again.
         String filter = pendingFilter;
@@ -357,12 +366,7 @@ public final class LibraryScreen implements ChildSink {
 
         page = new LinearLayout(context);
         page.setOrientation(LinearLayout.VERTICAL);
-        results = new LinearLayout(context);
-        results.setOrientation(LinearLayout.VERTICAL);
-        results.setVisibility(View.GONE);
         body.addView(page, new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
-        body.addView(results, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
 
         List<MediaClient.Item> random = new ArrayList<MediaClient.Item>();
@@ -578,12 +582,14 @@ public final class LibraryScreen implements ChildSink {
     private void onFilterChanged(String value) {
         String term = value == null ? "" : value.trim();
         clear.setVisibility(term.length() > 0 ? View.VISIBLE : View.GONE);
-        if (page == null || results == null) return;
+        if (page == null) return;
         boolean filtered = term.length() > 0;
-        page.setVisibility(filtered ? View.GONE : View.VISIBLE);
-        results.setVisibility(filtered ? View.VISIBLE : View.GONE);
+        scroll.setVisibility(filtered ? View.GONE : View.VISIBLE);
+        if (resultsList != null) {
+            resultsList.setVisibility(filtered ? View.VISIBLE : View.GONE);
+        }
         if (!filtered) {
-            results.removeAllViews();
+            resultAdapter = null;
             updateSummary();
             scrollToTop();
             return;
@@ -592,9 +598,8 @@ public final class LibraryScreen implements ChildSink {
     }
 
     private void buildResults(String term) {
-        if (results == null) return;
-        results.removeAllViews();
         String needle = normalize(term);
+        List<Object> entries = new ArrayList<Object>();
         int total = 0;
         for (Category category : categories) {
             List<MediaClient.Item> matches = new ArrayList<MediaClient.Item>();
@@ -602,28 +607,146 @@ public final class LibraryScreen implements ChildSink {
                 if (matches(item, needle)) matches.add(item);
             }
             if (matches.isEmpty()) continue;
-            SectionHeader header = new SectionHeader(context, category.title, category.icon);
-            header.setCount(matches.size());
-            LinearLayout.LayoutParams headerParams = new LinearLayout.LayoutParams(
-                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-            headerParams.topMargin = Tokens.dp(16);
-            headerParams.bottomMargin = Tokens.dp(6);
-            results.addView(header, headerParams);
-            for (MediaClient.Item item : matches) addResultRow(item, category);
+            entries.add(new ResultHeader(category.title, category.icon, matches.size()));
+            for (MediaClient.Item item : matches) {
+                entries.add(new ResultEntry(item, category.kind));
+            }
             total += matches.size();
         }
-        if (total == 0) {
-            results.addView(new EmptyState(context, Icons.SEARCH,
-                            "Nada encontrado na biblioteca",
-                            "Nenhum artista, álbum ou playlist carregado corresponde a \""
-                                    + term + "\"."),
-                    new LinearLayout.LayoutParams(
-                            ViewGroup.LayoutParams.MATCH_PARENT,
-                            ViewGroup.LayoutParams.WRAP_CONTENT));
+        if (total == 0) entries.add(new ResultEmpty(term));
+        if (resultsList == null) {
+            resultsList = new ListView(context);
+            resultsList.setDivider(new ColorDrawable(0x00000000));
+            resultsList.setDividerHeight(Tokens.dp(8));
+            resultsList.setSelector(android.R.color.transparent);
+            resultsList.setItemsCanFocus(true);
+            resultsList.setFocusable(true);
+            resultsList.setClipToPadding(false);
+            resultsList.setPadding(Tokens.dp(16), Tokens.dp(4), Tokens.dp(16), Tokens.dp(24));
+            contentHost.addView(resultsList, new FrameLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
         }
+        resultAdapter = new ResultAdapter(entries);
+        resultsList.setAdapter(resultAdapter);
+        resultsList.setVisibility(View.VISIBLE);
+        resultsList.setSelection(0);
         subtitleView.setText(total + (total == 1 ? " resultado" : " resultados"));
         scrollToTop();
         applyPendingScroll();
+        final int found = total;
+        resultsList.post(new Runnable() {
+            @Override
+            public void run() {
+                Log.i("AppleMusicOne", "perf library results=" + found
+                        + " rows=" + resultsList.getChildCount()
+                        + " views=" + Perf.views(resultsList));
+            }
+        });
+    }
+
+    /** Section header inside the filter list (never recycled: only a handful per query). */
+    private static final class ResultHeader {
+        final String title;
+        final int icon;
+        final int count;
+
+        ResultHeader(String title, int icon, int count) {
+            this.title = title;
+            this.icon = icon;
+            this.count = count;
+        }
+    }
+
+    /** One matching library item; keeps the category so the subtitle can fall back to its label. */
+    private static final class ResultEntry {
+        final MediaClient.Item item;
+        final int kind;
+
+        ResultEntry(MediaClient.Item item, int kind) {
+            this.item = item;
+            this.kind = kind;
+        }
+    }
+
+    private static final class ResultEmpty {
+        final String term;
+
+        ResultEmpty(String term) {
+            this.term = term;
+        }
+    }
+
+    private final class ResultAdapter extends BaseAdapter {
+
+        private final List<Object> entries;
+
+        ResultAdapter(List<Object> entries) {
+            this.entries = entries;
+        }
+
+        @Override
+        public int getCount() {
+            return entries.size();
+        }
+
+        @Override
+        public Object getItem(int position) {
+            return entries.get(position);
+        }
+
+        @Override
+        public long getItemId(int position) {
+            return position;
+        }
+
+        @Override
+        public int getViewTypeCount() {
+            return 3;
+        }
+
+        @Override
+        public int getItemViewType(int position) {
+            Object entry = entries.get(position);
+            return entry instanceof ResultHeader ? 0 : entry instanceof ResultEmpty ? 2 : 1;
+        }
+
+        @Override
+        public View getView(int position, View convertView, ViewGroup parent) {
+            Object entry = entries.get(position);
+            if (entry instanceof ResultHeader) {
+                ResultHeader header = (ResultHeader) entry;
+                SectionHeader view = new SectionHeader(context, header.title, header.icon);
+                view.setCount(header.count);
+                view.setPadding(0, Tokens.dp(16), 0, Tokens.dp(6));
+                return view;
+            }
+            if (entry instanceof ResultEmpty) {
+                return new EmptyState(context, Icons.SEARCH, "Nada encontrado na biblioteca",
+                        "Nenhum artista, álbum ou playlist carregado corresponde a \""
+                                + ((ResultEmpty) entry).term + "\".");
+            }
+            final ResultEntry result = (ResultEntry) entry;
+            final MediaClient.Item item = result.item;
+            ListRow row = convertView instanceof ListRow
+                    ? (ListRow) convertView
+                    : new ListRow(context, artwork, "", "", null, true);
+            String subtitle = item.subtitle.length() > 0 ? item.subtitle : label(result.kind);
+            row.bind(artwork, item.title, subtitle, item.artworkUri, true);
+            row.setOnClickListener(new View.OnClickListener() {
+                @Override
+                public void onClick(View v) {
+                    open(item);
+                }
+            });
+            row.setOnLongClickListener(new View.OnLongClickListener() {
+                @Override
+                public boolean onLongClick(View v) {
+                    host.itemActions(item);
+                    return true;
+                }
+            });
+            return row;
+        }
     }
 
     /** Puts the scroll back where it was before the rotation, once the content is in. */
@@ -631,29 +754,6 @@ public final class LibraryScreen implements ChildSink {
         if (pendingScroll <= 0f) return;
         ScrollMemory.restore(scroll, pendingScroll);
         pendingScroll = 0f;
-    }
-
-    private void addResultRow(final MediaClient.Item item, Category category) {
-        String subtitle = item.subtitle.length() > 0 ? item.subtitle : label(category.kind);
-        ListRow row = new ListRow(context, artwork, item.title, subtitle,
-                item.artworkUri, true);
-        row.setOnClickListener(new View.OnClickListener() {
-            @Override
-            public void onClick(View v) {
-                open(item);
-            }
-        });
-        row.setOnLongClickListener(new View.OnLongClickListener() {
-            @Override
-            public boolean onLongClick(View v) {
-                host.itemActions(item);
-                return true;
-            }
-        });
-        LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        params.bottomMargin = Tokens.dp(8);
-        results.addView(row, params);
     }
 
     private void scrollToTop() {

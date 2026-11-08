@@ -7,10 +7,11 @@ import android.util.Log;
 import android.view.Gravity;
 import android.view.View;
 import android.view.ViewGroup;
+import android.widget.BaseAdapter;
 import android.widget.FrameLayout;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
-import android.widget.ScrollView;
+import android.widget.ListView;
 import android.widget.SeekBar;
 import android.widget.TextView;
 
@@ -22,6 +23,7 @@ import com.anderson.applemusic.one.theme.Tokens;
 import com.anderson.applemusic.one.widget.CircleButton;
 import com.anderson.applemusic.one.widget.Focus;
 import com.anderson.applemusic.one.widget.Icons;
+import com.anderson.applemusic.one.widget.Perf;
 import com.anderson.applemusic.one.widget.Pill;
 import com.anderson.applemusic.one.widget.TrackRow;
 
@@ -74,7 +76,8 @@ public final class NowPlayingScreen {
     private final TextView feedback;
     private final LinearLayout extras;
     private final FrameLayout queuePanel;
-    private final LinearLayout queueRows;
+    private ListView queueList;
+    private QueueAdapter queueAdapter;
     private final TextView queueCount;
     private MediaClient.Snapshot latest = new MediaClient.Snapshot();
     private int lastArtworkHash;
@@ -89,6 +92,32 @@ public final class NowPlayingScreen {
         @Override
         public void run() {
             feedback.setVisibility(View.GONE);
+        }
+    };
+
+    /**
+     * Puts the D-pad focus on the active queue row once the ListView has measured its
+     * children (a single post runs before the first layout and used to leave the list
+     * focused without a row).
+     */
+    private int queueFocusAttempts;
+    private final Runnable focusQueueActive = new Runnable() {
+        @Override
+        public void run() {
+            int active = Math.max(0, latest.activeQueueIndex());
+            int index = active - queueList.getFirstVisiblePosition();
+            View row = index >= 0 && index < queueList.getChildCount()
+                    ? queueList.getChildAt(index) : null;
+            boolean focused = row != null && row.requestFocus();
+            // In touch mode the rows are not focusable; the list itself takes the focus and
+            // hands it to a row on the first D-pad press.
+            if (!focused) focused = queueList.requestFocus();
+            if (focused) {
+                queueFocusAttempts = 0;
+                return;
+            }
+            if (queueFocusAttempts++ < 12) queueList.postOnAnimation(this);
+            else queueFocusAttempts = 0;
         }
     };
 
@@ -319,8 +348,6 @@ public final class NowPlayingScreen {
         feedbackParams.topMargin = Tokens.dp(64);
         root.addView(feedback, feedbackParams);
 
-        queueRows = new LinearLayout(context);
-        queueRows.setOrientation(LinearLayout.VERTICAL);
         queueCount = Inter.text(context, "", Tokens.CAPTION, Inter.REGULAR, Tokens.TEXT_DIM);
         queuePanel = buildQueuePanel();
         root.addView(queuePanel, new FrameLayout.LayoutParams(
@@ -484,10 +511,14 @@ public final class NowPlayingScreen {
         headingParams.bottomMargin = Tokens.dp(10);
         sheet.addView(headingRow, headingParams);
 
-        ScrollView scroll = new ScrollView(context);
-        scroll.setVerticalScrollBarEnabled(false);
-        scroll.addView(queueRows);
-        sheet.addView(scroll, new LinearLayout.LayoutParams(
+        queueList = new ListView(context);
+        queueList.setVerticalScrollBarEnabled(false);
+        queueList.setDivider(null);
+        queueList.setSelector(android.R.color.transparent);
+        queueList.setItemsCanFocus(true);
+        queueList.setFocusable(true);
+        queueList.setClipToPadding(false);
+        sheet.addView(queueList, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
 
         TextView close = Inter.text(context, "Fechar", 13f, Inter.SEMIBOLD, Tokens.TEXT_DIM);
@@ -531,12 +562,14 @@ public final class NowPlayingScreen {
         queuePanel.setVisibility(View.VISIBLE);
         queuePanel.setAlpha(0f);
         queuePanel.animate().alpha(1f).setDuration(140L).start();
-        int active = Math.max(0, latest.activeQueueIndex());
-        View row = queueRows.getChildAt(active);
-        if (row != null) row.requestFocus();
+        final int active = Math.max(0, latest.activeQueueIndex());
+        queueList.setSelection(active);
+        queueFocusAttempts = 0;
+        queueList.post(focusQueueActive);
     }
 
     public void closeQueue() {
+        queueList.removeCallbacks(focusQueueActive);
         queuePanel.setVisibility(View.GONE);
         page.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_AUTO);
     }
@@ -560,28 +593,68 @@ public final class NowPlayingScreen {
             queueSize = entries.size();
             queueFirstId = first;
             queueLastId = last;
-            queueRows.removeAllViews();
-            for (int i = 0; i < entries.size(); i++) {
-                final MediaClient.QueueEntry entry = entries.get(i);
-                TrackRow row = new TrackRow(context, i + 1, entry.title, entry.subtitle);
-                row.setOnClickListener(new View.OnClickListener() {
-                    @Override
-                    public void onClick(View v) {
-                        host.skipToQueue(entry.queueId);
-                    }
-                });
-                LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(
-                        ViewGroup.LayoutParams.MATCH_PARENT,
-                        ViewGroup.LayoutParams.WRAP_CONTENT);
-                params.bottomMargin = Tokens.dp(2);
-                queueRows.addView(row, params);
+            queueAdapter = new QueueAdapter(entries);
+            queueList.setAdapter(queueAdapter);
+            if (isQueueOpen()) queueList.setSelection(Math.max(0, snapshot.activeQueueIndex()));
+            final int count = entries.size();
+            queueList.postDelayed(new Runnable() {
+                @Override
+                public void run() {
+                    Log.i(TAG, "perf queue items=" + count
+                            + " rows=" + queueList.getChildCount()
+                            + " views=" + Perf.views(queueList));
+                }
+            }, 150L);
+        } else if (queueAdapter != null) {
+            int active = snapshot.activeQueueIndex();
+            if (active != queueAdapter.active) {
+                queueAdapter.active = active;
+                queueAdapter.notifyDataSetChanged();
             }
         }
         queueCount.setText(entries.size() + " faixas");
-        int active = snapshot.activeQueueIndex();
-        for (int i = 0; i < queueRows.getChildCount(); i++) {
-            View child = queueRows.getChildAt(i);
-            if (child instanceof TrackRow) ((TrackRow) child).setPlaying(i == active);
+    }
+
+    /** Recycled queue rows: 60-100 tracks reuse the visible TrackRows only. */
+    private final class QueueAdapter extends BaseAdapter {
+
+        private final List<MediaClient.QueueEntry> entries;
+        private int active;
+
+        QueueAdapter(List<MediaClient.QueueEntry> entries) {
+            this.entries = entries;
+            this.active = latest.activeQueueIndex();
+        }
+
+        @Override
+        public int getCount() {
+            return entries.size();
+        }
+
+        @Override
+        public Object getItem(int position) {
+            return entries.get(position);
+        }
+
+        @Override
+        public long getItemId(int position) {
+            return position;
+        }
+
+        @Override
+        public View getView(int position, View convertView, ViewGroup parent) {
+            final MediaClient.QueueEntry entry = entries.get(position);
+            TrackRow row = convertView instanceof TrackRow
+                    ? (TrackRow) convertView : new TrackRow(context, position + 1, "", "");
+            row.bind(position + 1, entry.title, entry.subtitle);
+            row.setPlaying(position == active);
+            row.setOnClickListener(new View.OnClickListener() {
+                @Override
+                public void onClick(View v) {
+                    host.skipToQueue(entry.queueId);
+                }
+            });
+            return row;
         }
     }
 
