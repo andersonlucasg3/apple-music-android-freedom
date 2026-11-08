@@ -1,6 +1,7 @@
 package com.anderson.applemusic.one.screen;
 
 import android.content.Context;
+import android.os.Bundle;
 import android.text.TextUtils;
 import android.view.Gravity;
 import android.view.View;
@@ -21,6 +22,7 @@ import com.anderson.applemusic.one.widget.EmptyState;
 import com.anderson.applemusic.one.widget.Icons;
 import com.anderson.applemusic.one.widget.ListRow;
 import com.anderson.applemusic.one.widget.Pill;
+import com.anderson.applemusic.one.widget.ScrollMemory;
 import com.anderson.applemusic.one.widget.Skeleton;
 import com.anderson.applemusic.one.widget.TrackRow;
 
@@ -97,6 +99,8 @@ public class CollectionScreen implements ChildSink {
     private boolean trackList;
     /** Guards amp-api callbacks against a level the user already left. */
     private int generation;
+    /** Scroll position being restored after a rotation (fraction of the range). */
+    private float pendingScroll;
 
     public CollectionScreen(Context context, ScreenHost host, ArtworkLoader artwork,
                             CatalogSearch catalog, int mode, int emptyIcon) {
@@ -210,6 +214,59 @@ public class CollectionScreen implements ChildSink {
         return stack.isEmpty() ? null : stack.get(stack.size() - 1);
     }
 
+    /**
+     * Breadcrumb + scroll, kept across a rotation. Every level is stored (id/title/kind), so
+     * BACK still walks the same path; only the top level is fetched again.
+     */
+    public void saveState(Bundle out, String prefix) {
+        int count = stack.size();
+        String[] ids = new String[count];
+        String[] titles = new String[count];
+        String[] subtitles = new String[count];
+        String[] directs = new String[count];
+        int[] kinds = new int[count];
+        for (int i = 0; i < count; i++) {
+            Node node = stack.get(i);
+            ids[i] = node.id;
+            titles[i] = node.title;
+            subtitles[i] = node.subtitle;
+            directs[i] = node.directId;
+            kinds[i] = node.kind;
+        }
+        out.putInt(prefix + ".count", count);
+        out.putStringArray(prefix + ".ids", ids);
+        out.putStringArray(prefix + ".titles", titles);
+        out.putStringArray(prefix + ".subtitles", subtitles);
+        out.putStringArray(prefix + ".directs", directs);
+        out.putIntArray(prefix + ".kinds", kinds);
+        ScrollMemory.save(out, prefix + ".scroll", scroll);
+    }
+
+    /** Rebuilds the saved stack and reloads only its top level; false when nothing to do. */
+    public boolean restoreState(Bundle in, String prefix) {
+        if (in == null) return false;
+        int count = in.getInt(prefix + ".count", 0);
+        String[] ids = in.getStringArray(prefix + ".ids");
+        String[] titles = in.getStringArray(prefix + ".titles");
+        String[] subtitles = in.getStringArray(prefix + ".subtitles");
+        String[] directs = in.getStringArray(prefix + ".directs");
+        int[] kinds = in.getIntArray(prefix + ".kinds");
+        if (count <= 0 || ids == null || titles == null || subtitles == null
+                || directs == null || kinds == null || ids.length < count
+                || titles.length < count || subtitles.length < count
+                || directs.length < count || kinds.length < count) {
+            return false;
+        }
+        stack.clear();
+        generation++;
+        for (int i = 0; i < count; i++) {
+            stack.add(new Node(ids[i], titles[i], subtitles[i], kinds[i], directs[i]));
+        }
+        pendingScroll = in.getFloat(prefix + ".scroll", 0f);
+        render();
+        return true;
+    }
+
     private void push(Node node) {
         stack.add(node);
         render();
@@ -278,6 +335,13 @@ public class CollectionScreen implements ChildSink {
         }
     }
 
+    /** Puts the scroll back where it was before the rotation, once the level is in. */
+    private void applyPendingScroll() {
+        if (pendingScroll <= 0f) return;
+        ScrollMemory.restore(scroll, pendingScroll);
+        pendingScroll = 0f;
+    }
+
     // --- browse levels ------------------------------------------------------------
 
     @Override
@@ -304,6 +368,7 @@ public class CollectionScreen implements ChildSink {
             addList(children);
         }
         updatePlayback(host.nowPlaying());
+        applyPendingScroll();
     }
 
     /**
@@ -450,6 +515,7 @@ public class CollectionScreen implements ChildSink {
             column.addView(track, params);
         }
         updatePlayback(host.nowPlaying());
+        applyPendingScroll();
     }
 
     private void playTop() {

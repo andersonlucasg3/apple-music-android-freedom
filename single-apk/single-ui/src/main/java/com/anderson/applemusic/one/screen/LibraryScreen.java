@@ -1,6 +1,7 @@
 package com.anderson.applemusic.one.screen;
 
 import android.content.Context;
+import android.os.Bundle;
 import android.text.Editable;
 import android.text.TextUtils;
 import android.text.TextWatcher;
@@ -28,6 +29,7 @@ import com.anderson.applemusic.one.widget.IconView;
 import com.anderson.applemusic.one.widget.Icons;
 import com.anderson.applemusic.one.widget.ListRow;
 import com.anderson.applemusic.one.widget.Pill;
+import com.anderson.applemusic.one.widget.ScrollMemory;
 import com.anderson.applemusic.one.widget.SectionHeader;
 import com.anderson.applemusic.one.widget.SeeAllCard;
 import com.anderson.applemusic.one.widget.ShelfView;
@@ -98,6 +100,9 @@ public final class LibraryScreen implements ChildSink {
     private String rootId;
     private String rootTitle = "Biblioteca";
     private int downFocusId = View.NO_ID;
+    /** Filter and scroll being restored after a rotation; consumed by {@link #bind}. */
+    private String pendingFilter;
+    private float pendingScroll;
 
     public LibraryScreen(Context context, ScreenHost host, ArtworkLoader artwork,
                          CatalogSearch catalog) {
@@ -256,9 +261,25 @@ public final class LibraryScreen implements ChildSink {
         categories.clear();
         page = null;
         results = null;
-        input.setText("");
+        // The local filter is part of the state: restore it (and its results) after a
+        // rotation instead of showing the unfiltered sections again.
+        String filter = pendingFilter;
+        pendingFilter = null;
+        input.setText(filter == null ? "" : filter);
         showSkeleton();
         host.loadChildren(parentId, this);
+    }
+
+    /** Local filter + scroll position, kept across a rotation. */
+    public void saveState(Bundle out) {
+        out.putString("one.library.filter", input.getText().toString());
+        ScrollMemory.save(out, "one.library.scroll", scroll);
+    }
+
+    public void restoreState(Bundle in) {
+        if (in == null) return;
+        pendingFilter = in.getString("one.library.filter", "");
+        pendingScroll = in.getFloat("one.library.scroll", 0f);
     }
 
     // --- loading -------------------------------------------------------------------
@@ -384,6 +405,7 @@ public final class LibraryScreen implements ChildSink {
         updateSummary();
         if (input.getText().length() > 0) onFilterChanged(input.getText().toString());
         host.status("");
+        applyPendingScroll();
     }
 
     private void addPlaceholders(ShelfView shelf) {
@@ -597,6 +619,14 @@ public final class LibraryScreen implements ChildSink {
         }
         subtitleView.setText(total + (total == 1 ? " resultado" : " resultados"));
         scrollToTop();
+        applyPendingScroll();
+    }
+
+    /** Puts the scroll back where it was before the rotation, once the content is in. */
+    private void applyPendingScroll() {
+        if (pendingScroll <= 0f) return;
+        ScrollMemory.restore(scroll, pendingScroll);
+        pendingScroll = 0f;
     }
 
     private void addResultRow(final MediaClient.Item item, Category category) {

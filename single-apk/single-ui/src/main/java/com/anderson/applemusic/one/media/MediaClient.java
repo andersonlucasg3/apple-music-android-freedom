@@ -334,6 +334,15 @@ public final class MediaClient {
         }
     }
 
+    /**
+     * Children already delivered for {@code parentId}, or null when the node was never
+     * loaded. Lets the host answer a second screen for the same node without re-subscribing
+     * (two screens can be restored on top of each other after a rotation).
+     */
+    public synchronized List<Item> cachedChildren(String parentId) {
+        return cache.get(parentId);
+    }
+
     private synchronized void deliver(String parentId, List<MediaBrowser.MediaItem> children) {
         final List<Item> items = new ArrayList<Item>(children.size());
         for (MediaBrowser.MediaItem child : children) {

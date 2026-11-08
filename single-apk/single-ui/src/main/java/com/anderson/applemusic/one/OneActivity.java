@@ -88,6 +88,28 @@ public final class OneActivity extends Activity
     private static final int KIND_RADIO = 1;
     private static final int KIND_LIBRARY = 2;
 
+    /** Saved state keys: the screen the user was on, not just the tab. */
+    private static final String KEY_TAB = "one.tab";
+    private static final String KEY_TAB_ID = "one.tab.id";
+    private static final String KEY_REFRESH = "one.refreshOnResume";
+    private static final String KEY_ACCOUNT = "one.account.open";
+    private static final String KEY_UPDATES = "one.updates.open";
+    private static final String KEY_PLAYER = "one.player.open";
+    private static final String KEY_QUEUE = "one.player.queue";
+    private static final String KEY_ACTIONS = "one.actions.open";
+    private static final String KEY_ACTIONS_HEADING = "one.actions.heading";
+    private static final String KEY_ACTIONS_SUBTITLE = "one.actions.subtitle";
+    private static final String KEY_ACTIONS_ITEM = "one.actions.hasItem";
+    private static final String KEY_ACTIONS_ID = "one.actions.id";
+    private static final String KEY_ACTIONS_TITLE = "one.actions.title";
+    private static final String KEY_ACTIONS_DETAIL = "one.actions.detail";
+    private static final String KEY_ACTIONS_ART = "one.actions.art";
+    private static final String KEY_ACTIONS_BROWSABLE = "one.actions.browsable";
+    private static final String KEY_ACTIONS_PLAYABLE = "one.actions.playable";
+    private static final String KEY_COLLECTION_GRID = "one.collection.grid";
+    private static final String PREFIX_COLLECTION = "one.collection";
+    private static final String PREFIX_RADIO = "one.radio";
+
     private final Handler main = new Handler(Looper.getMainLooper());
     private final ExecutorService loader = Executors.newSingleThreadExecutor();
 
@@ -135,8 +157,22 @@ public final class OneActivity extends Activity
     private AccountScreen accountScreen;
 
     private final List<MediaClient.Item> tabs = new ArrayList<MediaClient.Item>();
-    private final Map<String, ChildSink> pending = new HashMap<String, ChildSink>();
+    /** Browse subscriptions waiting for children; more than one screen can want a node. */
+    private final Map<String, List<ChildSink>> pending =
+            new HashMap<String, List<ChildSink>>();
     private int selectedTab = -1;
+
+    /** State of the activity that was destroyed by a rotation, until the tree arrives. */
+    private Bundle restoreState;
+    private int restoreTabIndex = -1;
+    private String restoreTabId;
+    private boolean restorePlayer;
+    private boolean restoreQueue;
+    private boolean restoreActions;
+    private String actionsHeading = "Ações";
+    private String actionsSubtitle;
+    private MediaClient.Item actionsItem;
+    private boolean overlayGrid;
 
     private MediaClient.Snapshot latest = new MediaClient.Snapshot();
     private boolean rootReceived;
@@ -152,6 +188,12 @@ public final class OneActivity extends Activity
         Tokens.init(this);
         Inter.load(this);
         hasTouch = Tokens.touch();
+        restoreState = state;
+        if (state != null) {
+            restoreTabIndex = state.getInt(KEY_TAB, -1);
+            restoreTabId = state.getString(KEY_TAB_ID);
+            refreshOnResume = state.getBoolean(KEY_REFRESH, false);
+        }
         client = new MediaClient(this);
         artwork = new ArtworkLoader(this);
         catalog = new CatalogSearch(this);
@@ -162,6 +204,37 @@ public final class OneActivity extends Activity
         client.connect();
         handleInstallStatus(getIntent());
         updater.autoCheck();
+        restoreShell(state);
+    }
+
+    /**
+     * Overlays that do not depend on the browse tree (account, updates, the catalogue
+     * search) are reopened right away; the tab and the browse/detail overlays wait for
+     * {@code __AUTO_ROOT__} so they subscribe to a connected {@link MediaClient}.
+     */
+    private void restoreShell(Bundle state) {
+        if (state == null) return;
+        if (state.getBoolean(KEY_ACCOUNT, false)) accountScreen.open();
+        if (state.getBoolean(KEY_UPDATES, false)) updatesScreen.open();
+        if (state.getBoolean("one.search.open", false)) {
+            searchScreen.restoreState(state);
+            searchScreen.openRestored();
+        }
+        restorePlayer = state.getBoolean(KEY_PLAYER, false);
+        restoreQueue = state.getBoolean(KEY_QUEUE, false);
+        restoreActions = state.getBoolean(KEY_ACTIONS, false);
+        if (restoreActions) {
+            actionsHeading = state.getString(KEY_ACTIONS_HEADING, "Ações");
+            actionsSubtitle = state.getString(KEY_ACTIONS_SUBTITLE, "");
+            if (state.getBoolean(KEY_ACTIONS_ITEM, false)) {
+                actionsItem = new MediaClient.Item(state.getString(KEY_ACTIONS_ID),
+                        state.getString(KEY_ACTIONS_TITLE),
+                        state.getString(KEY_ACTIONS_DETAIL),
+                        state.getString(KEY_ACTIONS_ART),
+                        state.getBoolean(KEY_ACTIONS_BROWSABLE, false),
+                        state.getBoolean(KEY_ACTIONS_PLAYABLE, false));
+            }
+        }
     }
 
     /**
@@ -401,9 +474,11 @@ public final class OneActivity extends Activity
     public void onChildrenFailed(String parentId) {
         Log.w(TAG, "children failed: " + parentId);
         if (MediaClient.AUTO_ROOT.equals(parentId) && retryCatalog()) return;
-        ChildSink sink = pending.get(parentId);
-        if (sink != null) {
-            sink.onFailed(parentId);
+        List<ChildSink> sinks = pending.get(parentId);
+        if (sinks != null && !sinks.isEmpty()) {
+            for (ChildSink sink : new ArrayList<ChildSink>(sinks)) {
+                sink.onFailed(parentId);
+            }
         } else {
             setStatus("Não foi possível carregar " + parentId);
         }
@@ -415,9 +490,11 @@ public final class OneActivity extends Activity
             onRoot(children);
             return;
         }
-        ChildSink sink = pending.get(parentId);
-        if (sink != null) {
-            sink.onChildren(parentId, children);
+        List<ChildSink> sinks = pending.get(parentId);
+        if (sinks != null && !sinks.isEmpty()) {
+            for (ChildSink sink : new ArrayList<ChildSink>(sinks)) {
+                sink.onChildren(parentId, children);
+            }
             return;
         }
         Log.w(TAG, "unhandled children for " + parentId);
@@ -441,8 +518,13 @@ public final class OneActivity extends Activity
         tabs.addAll(found);
         String[] labels = new String[tabs.size()];
         for (int i = 0; i < tabs.size(); i++) labels[i] = label(tabs.get(i));
-        topBar.setTabs(labels, 0);
-        selectTab(0);
+        final Bundle saved = restoreState;
+        restoreState = null;
+        int index = saved == null ? 0 : restoredTab();
+        Log.i(TAG, "root arrived, tab=" + index + (saved == null ? "" : " (restored)"));
+        topBar.setTabs(labels, index);
+        selectTab(index, saved);
+        if (saved != null) restoreOverlays(saved);
         // TV has no touch: start the D-pad on the selected tab, not on the top bar.
         if (!hasTouch) {
             main.post(new Runnable() {
@@ -452,6 +534,56 @@ public final class OneActivity extends Activity
                 }
             });
         }
+    }
+
+    /** Index of the tab that was selected before the rotation, by id with index fallback. */
+    private int restoredTab() {
+        if (restoreTabId != null) {
+            for (int i = 0; i < tabs.size(); i++) {
+                if (restoreTabId.equals(tabs.get(i).id)) return i;
+            }
+        }
+        if (restoreTabIndex >= 0 && restoreTabIndex < tabs.size()) return restoreTabIndex;
+        return 0;
+    }
+
+    /**
+     * Puts the overlays back on top of the restored tab. Collection and detail reload only
+     * their top level (the breadcrumb keeps the path); the player/queue/actions wait for
+     * the session snapshot in {@link #applyPlayback()}.
+     */
+    private void restoreOverlays(Bundle saved) {
+        int collectionCount = saved.getInt(PREFIX_COLLECTION + ".count", 0);
+        if (collectionCount > 0) {
+            closeCollectionOverlay();
+            int mode = saved.getBoolean(KEY_COLLECTION_GRID, false)
+                    ? CollectionScreen.GRID : CollectionScreen.LIST;
+            overlayGrid = mode == CollectionScreen.GRID;
+            overlayCollection = new CollectionScreen(this, this, artwork, catalog, mode,
+                    Icons.NOTE);
+            collectionHost.removeAllViews();
+            collectionHost.addView(overlayCollection.view(), new FrameLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+            overlayCollection.setExitOnRootBack(true);
+            collectionHost.setVisibility(View.VISIBLE);
+            overlayCollection.restoreState(saved, PREFIX_COLLECTION);
+        }
+        if (saved.getInt("one.detail.count", 0) > 0) {
+            closeDetailOverlay();
+            detailScreen = new DetailScreen(this, this, artwork, catalog);
+            detailHost.removeAllViews();
+            detailHost.addView(detailScreen.view(), new FrameLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+            detailScreen.setExitOnRootBack(true);
+            detailHost.setVisibility(View.VISIBLE);
+            setDetailFocus(true);
+            detailScreen.restoreState(saved);
+        }
+        Log.i(TAG, "overlays restored: collection=" + (collectionCount > 0)
+                + " detail=" + (saved.getInt("one.detail.count", 0) > 0)
+                + " player=" + saved.getBoolean(KEY_PLAYER, false)
+                + " queue=" + saved.getBoolean(KEY_QUEUE, false)
+                + " actions=" + saved.getBoolean(KEY_ACTIONS, false));
     }
 
     /**
@@ -497,6 +629,10 @@ public final class OneActivity extends Activity
     }
 
     private void selectTab(int index) {
+        selectTab(index, null);
+    }
+
+    private void selectTab(int index, Bundle saved) {
         if (index < 0 || index >= tabs.size()) return;
         disposeTabScreen();
         selectedTab = index;
@@ -510,19 +646,23 @@ public final class OneActivity extends Activity
             view = homeScreen.view();
             screenHost.addView(view, new FrameLayout.LayoutParams(
                     ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+            if (saved != null) homeScreen.restoreState(saved);
             homeScreen.bind(tab);
         } else if (kind == KIND_RADIO) {
             tabCollection = new RadioScreen(this, this, artwork, catalog);
             view = tabCollection.view();
             screenHost.addView(view, new FrameLayout.LayoutParams(
                     ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
-            tabCollection.bind(tab.id, label(tab));
+            boolean restored = saved != null
+                    && tabCollection.restoreState(saved, PREFIX_RADIO);
+            if (!restored) tabCollection.bind(tab.id, label(tab));
         } else {
             libraryScreen = new LibraryScreen(this, this, artwork, catalog);
             libraryScreen.setDownFocusId(miniPlayer.getId());
             view = libraryScreen.view();
             screenHost.addView(view, new FrameLayout.LayoutParams(
                     ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+            if (saved != null) libraryScreen.restoreState(saved);
             libraryScreen.bind(tab.id, label(tab));
         }
         setStatus("Carregando " + label(tab) + "…");
@@ -548,15 +688,32 @@ public final class OneActivity extends Activity
 
     @Override
     public void loadChildren(String parentId, ChildSink sink) {
-        pending.put(parentId, sink);
+        // Two screens can be restored on top of each other (a tab and its "Ver tudo"
+        // overlay); a node that is already in the client's cache is answered straight
+        // away instead of issuing a second subscription.
+        List<MediaClient.Item> cached = client.cachedChildren(parentId);
+        if (cached != null) {
+            sink.onChildren(parentId, cached);
+            return;
+        }
+        List<ChildSink> sinks = pending.get(parentId);
+        if (sinks == null) {
+            sinks = new ArrayList<ChildSink>();
+            pending.put(parentId, sinks);
+        }
+        sinks.add(sink);
         loadAsync(parentId);
     }
 
     @Override
     public void forgetChildren(ChildSink sink) {
         List<String> drop = new ArrayList<String>();
-        for (Map.Entry<String, ChildSink> entry : pending.entrySet()) {
-            if (entry.getValue() == sink) drop.add(entry.getKey());
+        for (Map.Entry<String, List<ChildSink>> entry : pending.entrySet()) {
+            List<ChildSink> sinks = entry.getValue();
+            while (sinks.remove(sink)) {
+                // Remove every occurrence (loadChildren never adds the same sink twice).
+            }
+            if (sinks.isEmpty()) drop.add(entry.getKey());
         }
         for (String key : drop) pending.remove(key);
     }
@@ -658,6 +815,7 @@ public final class OneActivity extends Activity
     @Override
     public void openCollection(String title, String parentId, boolean grid) {
         closeCollectionOverlay();
+        overlayGrid = grid;
         overlayCollection = new CollectionScreen(this, this, artwork, catalog,
                 grid ? CollectionScreen.GRID : CollectionScreen.LIST, Icons.NOTE);
         collectionHost.removeAllViews();
@@ -673,6 +831,7 @@ public final class OneActivity extends Activity
     public void openLibraryCollection(int kind, String title, String subtitle,
                                       String libraryId) {
         closeCollectionOverlay();
+        overlayGrid = false;
         overlayCollection = new CollectionScreen(this, this, artwork, catalog,
                 CollectionScreen.LIST, Icons.NOTE);
         collectionHost.removeAllViews();
@@ -880,6 +1039,18 @@ public final class OneActivity extends Activity
 
     private void applyPlayback() {
         MediaClient.Snapshot snapshot = latest;
+        if (restorePlayer && snapshot.hasSession) {
+            restorePlayer = false;
+            openPlayer();
+            if (restoreQueue) {
+                restoreQueue = false;
+                playerScreen.openQueueRestored();
+            }
+        }
+        if (restoreActions && snapshot.hasSession) {
+            restoreActions = false;
+            showActions(actionsHeading, actionsSubtitle, actionsItem);
+        }
         boolean visible = snapshot.hasSession
                 && (snapshot.title.length() > 0 || snapshot.playing);
         miniPlayer.setVisibility(visible ? View.VISIBLE : View.GONE);
@@ -915,6 +1086,9 @@ public final class OneActivity extends Activity
                     : "As ações desta sessão já estão nos botões do player");
             return;
         }
+        actionsHeading = heading;
+        actionsSubtitle = subtitle;
+        actionsItem = item;
         actionSheet.show(heading, subtitle, actions, new ActionSheet.Listener() {
             @Override
             public void onAction(MediaClient.Action action) {
@@ -1199,6 +1373,55 @@ public final class OneActivity extends Activity
         super.onNewIntent(intent);
         setIntent(intent);
         handleInstallStatus(intent);
+    }
+
+    /**
+     * A rotation recreates the activity, so the screen itself is state: the selected tab,
+     * the overlay stack (collection/detail with their ids and breadcrumb, search term,
+     * player/queue/actions/account/updates), the Biblioteca filter and the scroll offsets.
+     */
+    @Override
+    protected void onSaveInstanceState(Bundle out) {
+        super.onSaveInstanceState(out);
+        if (restoreState != null && !rootReceived) {
+            // Rotated again before the browse tree arrived: carry the pending restore over.
+            out.putAll(restoreState);
+            return;
+        }
+        out.putInt(KEY_TAB, selectedTab);
+        if (selectedTab >= 0 && selectedTab < tabs.size()) {
+            out.putString(KEY_TAB_ID, tabs.get(selectedTab).id);
+        }
+        out.putBoolean(KEY_REFRESH, refreshOnResume);
+        if (homeScreen != null) homeScreen.saveState(out);
+        if (libraryScreen != null) libraryScreen.saveState(out);
+        if (tabCollection != null) tabCollection.saveState(out, PREFIX_RADIO);
+        if (overlayCollection != null) {
+            overlayCollection.saveState(out, PREFIX_COLLECTION);
+            out.putBoolean(KEY_COLLECTION_GRID, overlayGrid);
+        }
+        if (detailScreen != null) detailScreen.saveState(out);
+        if (searchScreen != null) searchScreen.saveState(out);
+        if (playerScreen != null) {
+            out.putBoolean(KEY_PLAYER, playerScreen.isOpen());
+            out.putBoolean(KEY_QUEUE, playerScreen.isQueueOpen());
+        }
+        if (actionSheet != null && actionSheet.isOpen()) {
+            out.putBoolean(KEY_ACTIONS, true);
+            out.putString(KEY_ACTIONS_HEADING, actionsHeading);
+            out.putString(KEY_ACTIONS_SUBTITLE, actionsSubtitle);
+            out.putBoolean(KEY_ACTIONS_ITEM, actionsItem != null);
+            if (actionsItem != null) {
+                out.putString(KEY_ACTIONS_ID, actionsItem.id);
+                out.putString(KEY_ACTIONS_TITLE, actionsItem.title);
+                out.putString(KEY_ACTIONS_DETAIL, actionsItem.subtitle);
+                out.putString(KEY_ACTIONS_ART, actionsItem.artworkUri);
+                out.putBoolean(KEY_ACTIONS_BROWSABLE, actionsItem.browsable);
+                out.putBoolean(KEY_ACTIONS_PLAYABLE, actionsItem.playable);
+            }
+        }
+        if (updatesScreen != null) out.putBoolean(KEY_UPDATES, updatesScreen.isOpen());
+        if (accountScreen != null) out.putBoolean(KEY_ACCOUNT, accountScreen.isOpen());
     }
 
     // --- misc ----------------------------------------------------------------------

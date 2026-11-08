@@ -1,6 +1,7 @@
 package com.anderson.applemusic.one.screen;
 
 import android.content.Context;
+import android.os.Bundle;
 import android.text.TextUtils;
 import android.view.Gravity;
 import android.view.View;
@@ -21,6 +22,7 @@ import com.anderson.applemusic.one.widget.EmptyState;
 import com.anderson.applemusic.one.widget.Focus;
 import com.anderson.applemusic.one.widget.Icons;
 import com.anderson.applemusic.one.widget.Pill;
+import com.anderson.applemusic.one.widget.ScrollMemory;
 import com.anderson.applemusic.one.widget.SeeAllCard;
 import com.anderson.applemusic.one.widget.ShelfView;
 import com.anderson.applemusic.one.widget.Skeleton;
@@ -41,6 +43,7 @@ public final class HomeScreen implements ChildSink {
     private final ScreenHost host;
     private final ArtworkLoader artwork;
     private final FrameLayout root;
+    private final ScrollView scroll;
     private final LinearLayout column;
     private final Map<String, ShelfView> shelves = new HashMap<String, ShelfView>();
     private final Map<String, String> shelfTitles = new HashMap<String, String>();
@@ -51,6 +54,8 @@ public final class HomeScreen implements ChildSink {
     private String firstShelfTitle;
     private Skeleton skeleton;
     private int downFocusId = View.NO_ID;
+    /** Scroll position being restored after a rotation (fraction of the range). */
+    private float pendingScroll;
 
     private FrameLayout hero;
     private ImageView heroCover;
@@ -65,7 +70,7 @@ public final class HomeScreen implements ChildSink {
 
         root = new FrameLayout(context);
         root.setBackgroundColor(Tokens.BG);
-        ScrollView scroll = new ScrollView(context);
+        scroll = new ScrollView(context);
         scroll.setFillViewport(true);
         column = new LinearLayout(context);
         column.setOrientation(LinearLayout.VERTICAL);
@@ -83,6 +88,15 @@ public final class HomeScreen implements ChildSink {
     public void setDownFocusId(int id) {
         downFocusId = id;
         for (ShelfView shelf : shelves.values()) shelf.linkFocus(downFocusId);
+    }
+
+    /** Position of the shelves, kept across a rotation. */
+    public void saveState(Bundle out) {
+        ScrollMemory.save(out, "one.home.scroll", scroll);
+    }
+
+    public void restoreState(Bundle in) {
+        pendingScroll = in == null ? 0f : in.getFloat("one.home.scroll", 0f);
     }
 
     public void bind(MediaClient.Item tab) {
@@ -177,6 +191,14 @@ public final class HomeScreen implements ChildSink {
         }
         for (ShelfView shelf : shelves.values()) shelf.linkFocus(downFocusId);
         host.status("");
+        applyPendingScroll();
+    }
+
+    /** Puts the scroll back where it was before the rotation, once the shelves are in. */
+    private void applyPendingScroll() {
+        if (pendingScroll <= 0f) return;
+        ScrollMemory.restore(scroll, pendingScroll);
+        pendingScroll = 0f;
     }
 
     private ShelfView addShelf(String title) {

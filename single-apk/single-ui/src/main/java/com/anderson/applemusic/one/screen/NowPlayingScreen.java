@@ -3,6 +3,7 @@ package com.anderson.applemusic.one.screen;
 import android.content.Context;
 import android.content.res.ColorStateList;
 import android.text.TextUtils;
+import android.util.Log;
 import android.view.Gravity;
 import android.view.View;
 import android.view.ViewGroup;
@@ -44,6 +45,7 @@ import java.util.Locale;
  */
 public final class NowPlayingScreen {
 
+    private static final String TAG = "AppleMusicOne";
     private static final String STATION = "CREATE_STATION";
     private static final String SHUFFLE = "SHUFFLE";
     private static final String REPEAT = "REPEAT";
@@ -517,6 +519,12 @@ public final class NowPlayingScreen {
 
     public void closeQueue() {
         queuePanel.setVisibility(View.GONE);
+    }
+
+    /** Reopens the "A seguir" sheet after a rotation; no-op when the session has no queue. */
+    public void openQueueRestored() {
+        Log.i(TAG, "queue sheet restored (" + latest.queue.size() + " tracks)");
+        openQueue();
     }
 
     public boolean isQueueOpen() {

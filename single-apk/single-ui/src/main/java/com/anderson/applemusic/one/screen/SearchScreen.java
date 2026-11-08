@@ -2,6 +2,7 @@ package com.anderson.applemusic.one.screen;
 
 import android.app.Activity;
 import android.content.Context;
+import android.os.Bundle;
 import android.text.TextUtils;
 import android.view.Gravity;
 import android.view.KeyEvent;
@@ -26,6 +27,7 @@ import com.anderson.applemusic.one.widget.IconView;
 import com.anderson.applemusic.one.widget.Icons;
 import com.anderson.applemusic.one.widget.ListRow;
 import com.anderson.applemusic.one.widget.Pill;
+import com.anderson.applemusic.one.widget.ScrollMemory;
 import com.anderson.applemusic.one.widget.SectionHeader;
 import com.anderson.applemusic.one.widget.Skeleton;
 
@@ -51,12 +53,16 @@ public final class SearchScreen {
     private final FrameLayout root;
     private final EditText input;
     private final LinearLayout results;
+    private final ScrollView scroll;
     private final TextView status;
     private Skeleton skeleton;
     /** Bumped for every request; responses from an older one are dropped. */
     private int generation;
     /** Term of the request running right now, so a double submit issues one GET. */
     private String inFlightTerm;
+    /** Query and scroll kept across a rotation; {@link #openRestored} replays them. */
+    private String pendingTerm;
+    private float pendingScroll;
 
     public SearchScreen(Context context, ScreenHost host, ArtworkLoader artwork,
                         CatalogSearch catalog) {
@@ -165,7 +171,7 @@ public final class SearchScreen {
         status.setPadding(0, Tokens.dp(10), 0, Tokens.dp(4));
         page.addView(status);
 
-        ScrollView scroll = new ScrollView(context);
+        scroll = new ScrollView(context);
         scroll.setFillViewport(true);
         results = new LinearLayout(context);
         results.setOrientation(LinearLayout.VERTICAL);
@@ -184,6 +190,33 @@ public final class SearchScreen {
 
     public boolean isOpen() {
         return root.getVisibility() == View.VISIBLE;
+    }
+
+    /** Query + scroll, kept across a rotation; the host reopens the panel itself. */
+    public void saveState(Bundle out) {
+        out.putBoolean("one.search.open", isOpen());
+        out.putString("one.search.term", input.getText().toString());
+        ScrollMemory.save(out, "one.search.scroll", scroll);
+    }
+
+    public void restoreState(Bundle in) {
+        if (in == null) return;
+        pendingTerm = in.getString("one.search.term", "");
+        pendingScroll = in.getFloat("one.search.scroll", 0f);
+    }
+
+    /** Reopens the panel where it was and re-runs the last query (a single request). */
+    public void openRestored() {
+        root.setVisibility(View.VISIBLE);
+        String term = pendingTerm == null ? "" : pendingTerm.trim();
+        input.setText(term);
+        input.clearFocus();
+        if (term.length() == 0) {
+            showInitial();
+            applyPendingScroll();
+        } else {
+            runSearch(term);
+        }
     }
 
     public void open() {
@@ -249,6 +282,7 @@ public final class SearchScreen {
                 }
                 status.setText(found.size() + " resultado(s)");
                 addGroups(found);
+                applyPendingScroll();
             }
 
             @Override
@@ -366,6 +400,13 @@ public final class SearchScreen {
             results.removeView(skeleton);
             skeleton = null;
         }
+    }
+
+    /** Puts the scroll back where it was before the rotation, once the results are in. */
+    private void applyPendingScroll() {
+        if (pendingScroll <= 0f) return;
+        ScrollMemory.restore(scroll, pendingScroll);
+        pendingScroll = 0f;
     }
 
     public void dispose() {

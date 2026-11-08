@@ -295,6 +295,15 @@ Com targetSdk 36 o *predictive back* vem ligado: o sistema deixa de chamar
   Compara `one-<abi>.versionCode`, baixa, confere SHA-256 e instala via `PackageInstaller`.
 - **Estados**: vazio, erro e sem conexão com ícone e texto (`EmptyState`) em Início,
   Biblioteca, Rádio, Busca e Atualizações.
+- **Rotação/estado**: girar o aparelho recria a activity, mas a tela volta igual — aba
+  selecionada, pilha de overlays (coleção com breadcrumb, detalhe artista → álbum, busca,
+  player, fila, ações, conta, atualizações), filtro da Biblioteca, termo da Busca e
+  posição de scroll (guardada como fração do alcance, então portrait ↔ landscape mantém o
+  lugar). O conteúdo é recarregado do engine/amp-api — uma assinatura por nó e uma consulta
+  por busca —, sem duplicar o carregamento; gira de novo antes de a árvore chegar? o estado
+  pendente é repassado. Log: `root arrived, tab=N (restored)` e
+  `overlays restored: collection=… detail=… player=… queue=… actions=…`. Detalhes na seção
+  **Rotação e estado (1.9.7)**.
 - **Foco D-pad**: abas com contorno/pill, cards com 1.05 + contorno accent, player com
   cadeia explícita de foco, sheets com foco nas linhas; DOWN do chrome entra no conteúdo.
 
@@ -469,6 +478,42 @@ do último segmento do id, então os títulos em inglês da TV funcionam sem id 
   inicial; “Aleatória” não tem lista de faixas (`/library/songs` = 0 filhos), por isso
   não existe categoria “Músicas” — só o atalho que toca a biblioteca embaralhada.
 
+### Rotação e estado (1.9.7)
+
+O manifest do engine não declara `configChanges`, então girar (ou mudar `wm size`)
+destrói e recria a activity. A 1.9.6 voltava para o Início e recarregava o browse
+(`evidence/debt-05-rotated.png`); a partir da 1.9.7 `OneActivity` implementa
+`onSaveInstanceState` e remonta **a mesma tela**:
+
+| O que | Onde é salvo | Como volta |
+|---|---|---|
+| aba selecionada | `OneActivity` (`one.tab` + `one.tab.id`) | `onRoot` escolhe a aba por id (fallback índice) em vez de `selectTab(0)` |
+| coleção "Ver tudo" (overlay) | `CollectionScreen` (`one.collection.*`: ids/títulos/tipos + breadcrumb) | pilha reconstruída e só o nível do topo é resubscreito; BACK continua descendo |
+| detalhe (artista → álbum → …) | `DetailScreen` (`one.detail.*`) | breadcrumb e nível do topo voltam; só ele é buscado na amp-api |
+| busca | `SearchScreen` (`one.search.open/term/scroll`) | painel reaberto com o termo e **uma** nova consulta |
+| player / fila | `OneActivity` (`one.player.open/queue`) | `openPlayer()` + sheet "A seguir" disparados no primeiro snapshot da sessão |
+| ações, conta, atualizações | `OneActivity` | sheet de ações reabre quando a sessão publica as mesmas ações; painéis abrem direto |
+| filtro da Biblioteca | `LibraryScreen` (`one.library.filter`) | aplicado antes do primeiro layout; resultados refeitos a partir do que já carregou |
+| scroll (Início, Biblioteca, detalhe, coleção, busca) | `widget/ScrollMemory` (fração do alcance) | reaplicado quando o conteúdo mede; a fração absorve a mudança de tamanho dos cards |
+
+Detalhes de implementação:
+
+- **sem duplo carregamento**: a restauração entra no fluxo normal de `onRoot`
+  (`selectTab(index, savedState)`), então cada tela carrega uma vez. `OneActivity` mantém
+  um `Map<String, List<ChildSink>>` de assinaturas (duas telas restauradas podem querer o
+  mesmo nó) e `MediaClient.cachedChildren()` responde direto quando o nó já veio,
+  evitando `subscribe` duplicado.
+- **rotação em série**: se a activity girar de novo antes de `__AUTO_ROOT__` chegar,
+  `onSaveInstanceState` repassa o bundle pendente (`out.putAll`) em vez de gravar uma
+  tela vazia.
+- **volta do engine** continua igual: `refreshOnResume` também é salvo, então girar com a
+  `MainActivity` do engine na frente ainda reconecta e reassina o catálogo.
+- **o que o engine continua dono**: posição da faixa, fila e estado de shuffle/repeat não
+  são serializados (vêm do `MediaSession` ao reconectar); o sheet "Ações" só reaparece se a
+  sessão publicar as mesmas ações naquele instante; a busca reexecuta a consulta (1 GET);
+  o scroll do filtro é reconstruído junto com os resultados e pode voltar ao topo enquanto
+  as categorias chegam.
+
 ## Validado
 
 | Device | Resultado |
@@ -488,6 +533,8 @@ do último segmento do id, então os títulos em inglês da TV funcionam sem id 
 | `emulator-5554` (TV x86, 1.9.5, biblioteca/D-pad) | Instalado por cima. Biblioteca em 1080p com as seções do engine (`Shuffle Library`, `Recently Added`, `Playlists`, `Artists`, `Albums`) e contagens; D-pad DOWN: filtro → Shuffle → Recentes → “Ver tudo” de Playlists → “Ver tudo” de Artistas (93 itens) → ENTER = `AC/DC` (`/us/search?types=artists` → `/us/artists/5040714`, 25 álbuns) → DOWN = grade → ENTER = álbum (`/us/albums/574050396`); “Ver tudo” de Álbuns (281) → card `A War You Cannot Win` → detalhe (`/us/albums/1440920100`, 2012, 12 faixas, Metal) → RIGHT/ENTER em **Tocar** = `playFromMediaId 1440920100` (fila 12); DOWN da última seção → mini player; BACK volta nível a nível; `logcat -b crash` vazio. |
 | `RXCX100BZ5J` (arm64, 1.9.6, player/insets/busca) | Instalado por cima. Player com **Aleatório/Repetir/Favorito** (3 ações presentes) e `contentDescription` medido no `uiautomator` (`Aleatório`/`Repetir`/`Favorito`); toques enviaram `sendCustomAction ...SHUFFLE`, `...REPEAT` e `...FAVORITE` com “Aleatório alternado”/“Repetir alternado”/“Favorito alternado” na pílula de feedback; sheet **Ações** agora só com Reprodução Automática/Adicionar à Biblioteca/Criar Estação; girado para landscape (2340×1080) “Atualizações” termina em x=2148 e o mini player em x=2160, ambos fora da nav bar (que começa em ~2188); busca `daft` com ENTER+ENTER+Buscar = **um** `amp-api HTTP 200 /br/search?term=daft…` (18 resultados); Atualizações mostra `1.9.6 (10906)`; `logcat -b crash` vazio. |
 | `emulator-5554` (TV x86, 1.9.6, player/D-pad) | Instalado por cima. Player lado a lado com os três toggles na linha do cabeçalho; D-pad: UP (play → ‹), RIGHT (‹ → aleatório), ENTER = `sendCustomAction ...SHUFFLE` + “Aleatório alternado”; `logcat -b crash` vazio. |
+| `RXCX100BZ5J` (arm64, 1.9.7, rotação) | Instalado por cima. **Início** rolado até “MPB: joias ocultas”, girado 2× (`user_rotation 1` → `0`): volta na mesma aba e na mesma posição (`wave1b-02/03/04`). **Biblioteca** com filtro `backstreet` (1 resultado) girada para landscape: aba `tab=2 (restored)` e filtro/resultado preservados (`wave1b-06/07/08`). **Álbum** `A Capella - Single` → link **Ylvis** (profundidade 2) girado 2×: breadcrumb `A Capella - Single › Ylvis` intacto e BACK voltando álbum → Biblioteca (`wave1b-13/14/15/16/17`). **Player** com “A seguir” aberto girado: `queue sheet restored (34 tracks)` e sheet de volta em landscape (`wave1b-24/33`). **Ver tudo** (`Mais relevantes pra você`, 9 itens) girado: `collection=true`, lista e breadcrumb de volta (`wave1b-26/27/28`). **Busca** `daft` (18 resultados) girada: painel reaberto com o termo e **um** `amp-api HTTP 200 /br/search?term=daft…` (`wave1b-29/30/31`). `logcat -b crash` vazio. |
+| `emulator-5554` (TV x86, 1.9.7, `wm size`) | Instalado por cima. Rotação simulada com `wm size 1080x1920` / `1920x1080` / `reset`: **Início** `tab=0 (restored)` com as prateleiras e o foco do D-pad (`wave1b-tv-01/02`); **player** aberto na janela “retrato” e voltando lado a lado no landscape com a posição seguindo (0:10 → 0:28, `wave1b-tv-03/04`); **Biblioteca** com filtro `backstreet` (1 resultado) e `wm size` para “retrato”: `tab=2 (restored)` e `backstreet`/`Backstreet Boys Essentials` preservados (`wave1b-tv-05/06`); `logcat -b crash` vazio. |
 
 Evidências lado a lado com as referências dos companions
 (`.pipeline/revamp-tv/`, `.pipeline/revamp-car/` e as fotos de celular em
@@ -524,6 +571,18 @@ Onda 1 (1.9.6): `wave1a-player-phone.png` (player no celular com os três toggle
 `wave1a-land-player.png` (player lado a lado com os toggles no cabeçalho),
 `wave1a-search-one-get.png` e `wave1a-search-logcat.txt` (um único GET `daft`),
 `wave1a-tv-player.png` e `wave1a-tv-feedback.png` (player e feedback na TV).
+
+Onda 1b (1.9.7, rotação/estado): `wave1b-01-home-portrait.png` … `wave1b-04-home-back-portrait.png`
+(Início antes, rolado, em landscape e de volta — mesma aba e posição), `wave1b-05-library.png`
+… `wave1b-08-library-filter-back.png` (Biblioteca e filtro `backstreet` preservados nas duas
+direções), `wave1b-09-home-for-detail.png` … `wave1b-12-detail-back-portrait.png` (playlist
+`Chill` em pé e girada), `wave1b-13-album-detail.png` … `wave1b-17-detail-back-album.png`
+(álbum → artista com breadcrumb de profundidade 2 e BACK), `wave1b-18-home-playing.png` …
+`wave1b-25-player-queue-back.png` e `wave1b-32/33` (player e sheet “A seguir” com 34 faixas
+girados), `wave1b-26/27/28` (overlay “Ver tudo”), `wave1b-29/30/31` (busca `daft` girada),
+`wave1b-tv-01` … `wave1b-tv-07` (mesmos estados no emulador TV com `wm size`) e
+`wave1b-restore-logcat.txt` (`root arrived, tab=N (restored)`, `overlays restored`,
+`queue sheet restored`).
 
 Fila (1.9.2): `queue-02-player.png` e `queue-11-tv-player.png` (pill **Fila** no celular
 e na TV), `queue-03-panel.png` e `queue-12-tv-panel.png` (“A seguir” com a faixa atual em
@@ -584,6 +643,13 @@ e `library-20-tv-artist-detail.png`, `library-23-tv-library-album-detail.png` e
 - **Insets horizontais**: o conteúdo aplica left/right + `displayCutout`; em landscape a
   barra de apps troca os atalhos rotulados por ícones (Buscar/Conta/Atualizações) porque a
   fileira rotulada não cabe ao lado das abas — ver `wave1a-land-home.png`.
+- **Rotação recarrega o conteúdo**: a tela (aba, overlay, filtro, termo, scroll) volta
+  igual, mas o conteúdo é buscado de novo — uma assinatura por nó e uma consulta por busca;
+  posição de faixa/fila e o estado de shuffle/repeat continuam vindo do engine, não do
+  estado salvo. O scroll é uma fração do alcance (a altura dos cards muda entre portrait e
+  landscape) e o scroll dos resultados do filtro da Biblioteca pode voltar ao topo enquanto
+  as categorias ainda chegam. O sheet "Ações" só reaparece se a sessão publicar as mesmas
+  ações no primeiro snapshot, e os painéis Conta/Atualizações reabrem sem novo `check()`.
 - **Sem blur real**: o fundo do player é um gradiente escuro da cor dominante da capa
   (API 29 viável, sem `RenderEffect`/RenderScript nem blur em software). O visual é
   próximo do car-app, não idêntico ao desfoque do iOS.
