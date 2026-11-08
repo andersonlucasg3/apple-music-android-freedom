@@ -79,6 +79,8 @@ public final class OneActivity extends Activity
     private static final long TICK_MS = 500L;
     private static final long ACTION_TIMEOUT_MS = 2500L;
     private static final String ACTION_CREATE_STATION = "CREATE_STATION";
+    private static final String ACTION_SHUFFLE = "SHUFFLE";
+    private static final String ACTION_REPEAT = "REPEAT";
     private static final String ACTION_FAVORITE = "FAVORITE";
     private static final String ACTION_ADD_TO_LIBRARY = "ADD_TO_LIBRARY";
 
@@ -213,8 +215,34 @@ public final class OneActivity extends Activity
             @Override
             public android.view.WindowInsets onApplyWindowInsets(View v,
                                                                  android.view.WindowInsets insets) {
-                v.setPadding(0, insets.getSystemWindowInsetTop(), 0,
-                        insets.getSystemWindowInsetBottom());
+                // All four sides: in landscape the (3-button) navigation bar sits on the
+                // right and used to cover "Atualizações" and the mini player's play button.
+                int left;
+                int top;
+                int right;
+                int bottom;
+                if (Build.VERSION.SDK_INT >= 30) {
+                    android.graphics.Insets bars = insets.getInsets(
+                            android.view.WindowInsets.Type.systemBars()
+                                    | android.view.WindowInsets.Type.displayCutout());
+                    left = bars.left;
+                    top = bars.top;
+                    right = bars.right;
+                    bottom = bars.bottom;
+                } else {
+                    left = insets.getSystemWindowInsetLeft();
+                    top = insets.getSystemWindowInsetTop();
+                    right = insets.getSystemWindowInsetRight();
+                    bottom = insets.getSystemWindowInsetBottom();
+                    android.view.DisplayCutout cutout = insets.getDisplayCutout();
+                    if (cutout != null) {
+                        left = Math.max(left, cutout.getSafeInsetLeft());
+                        top = Math.max(top, cutout.getSafeInsetTop());
+                        right = Math.max(right, cutout.getSafeInsetRight());
+                        bottom = Math.max(bottom, cutout.getSafeInsetBottom());
+                    }
+                }
+                v.setPadding(left, top, right, bottom);
                 return insets;
             }
         });
@@ -762,6 +790,31 @@ public final class OneActivity extends Activity
         setStatus("Criando estação…");
     }
 
+    /**
+     * Player toggles (aleatório/repetir/favorito) are sent straight from the player; the
+     * engine does not publish the resulting shuffle/repeat state, so the confirmation says
+     * the action was toggled instead of claiming a new state.
+     */
+    @Override
+    public String sessionAction(String actionId) {
+        client.sendCustomAction(actionId);
+        String feedback = feedback(actionId);
+        setStatus(feedback);
+        return feedback;
+    }
+
+    /** Session actions minus the three that now live as player buttons. */
+    private static List<MediaClient.Action> itemActionsOf(List<MediaClient.Action> actions) {
+        List<MediaClient.Action> remaining = new ArrayList<MediaClient.Action>();
+        for (MediaClient.Action action : actions) {
+            if (action.action.endsWith(ACTION_SHUFFLE)
+                    || action.action.endsWith(ACTION_REPEAT)
+                    || action.action.endsWith(ACTION_FAVORITE)) continue;
+            remaining.add(action);
+        }
+        return remaining;
+    }
+
     @Override
     public void closePlayer() {
         playerScreen.close();
@@ -855,9 +908,11 @@ public final class OneActivity extends Activity
     // --- actions ------------------------------------------------------------------
 
     private void showActions(String heading, String subtitle, final MediaClient.Item item) {
-        final List<MediaClient.Action> actions = latest.actions;
+        final List<MediaClient.Action> actions = itemActionsOf(latest.actions);
         if (actions.isEmpty()) {
-            setStatus("Nenhuma ação disponível nesta sessão");
+            setStatus(latest.actions.isEmpty()
+                    ? "Nenhuma ação disponível nesta sessão"
+                    : "As ações desta sessão já estão nos botões do player");
             return;
         }
         actionSheet.show(heading, subtitle, actions, new ActionSheet.Listener() {
@@ -926,7 +981,9 @@ public final class OneActivity extends Activity
 
     private static String feedback(String actionId) {
         if (actionId.endsWith(ACTION_CREATE_STATION)) return "Criando estação…";
-        if (actionId.endsWith(ACTION_FAVORITE)) return "Favorito aplicado";
+        if (actionId.endsWith(ACTION_SHUFFLE)) return "Aleatório alternado";
+        if (actionId.endsWith(ACTION_REPEAT)) return "Repetir alternado";
+        if (actionId.endsWith(ACTION_FAVORITE)) return "Favorito alternado";
         if (actionId.endsWith(ACTION_ADD_TO_LIBRARY)) return "Adicionado à Biblioteca";
         return "Ação enviada";
     }

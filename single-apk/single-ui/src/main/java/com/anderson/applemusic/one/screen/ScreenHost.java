@@ -66,6 +66,9 @@ public interface ScreenHost {
 
     void sessionActions();
 
+    /** Sends one session custom action and returns its user-facing confirmation. */
+    String sessionAction(String actionId);
+
     void itemActions(MediaClient.Item item);
 
     void createStation();

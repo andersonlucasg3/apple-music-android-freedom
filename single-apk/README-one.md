@@ -115,7 +115,7 @@ Auditoria do dex (falha o build se sobrar classe de fora):
 
 ```
 dexdump -l plain single-apk/out-one/dex/classes.dex | findstr "Class descriptor"
-# 139 classes, todas Lcom/anderson/applemusic/one/...
+# 232 classes, todas Lcom/anderson/applemusic/one/...
 ```
 
 ## Instalar / abrir
@@ -243,8 +243,17 @@ Com targetSdk 36 o *predictive back* vem ligado: o sistema deixa de chamar
   de ids e degradação na seção **Navegação hierárquica**.
 - **Now Playing fullscreen**: fundo em gradiente escuro derivado da **cor dominante da
   capa** (`ColorArt`), capa grande 16 dp, título/artista/álbum, progresso com tempos,
-  prev 60 / play 80 / next 60 (play em accent), **Criar Estação**, **Ações** e **Fila**.
-  Layout lado a lado em TV/carro e empilhado no celular. Seek arrasta e envia `seekTo`.
+  prev 60 / play 80 / next 60 (play em accent), **aleatório/repetir/favorito**,
+  **Criar Estação**, **Ações** e **Fila**. Layout lado a lado em TV/carro e empilhado no
+  celular; no layout lado a lado os três toggles ficam na linha do cabeçalho (ao lado de
+  Ações) porque a janela girada não tem altura sobrando. Seek arrasta e envia `seekTo`.
+- **Aleatório / Repetir / Favorito**: aparecem só quando a sessão publica a ação
+  correspondente (`...playback.action.SHUFFLE`, `.REPEAT`, `.FAVORITE` em
+  `PlaybackState.getCustomActions()`); cada botão tem `contentDescription` e envia
+  `sendCustomAction` com confirmação própria ("Aleatório alternado", "Repetir alternado",
+  "Favorito alternado"). O engine **não publica o estado** resultante (nem em
+  `PlaybackState`/extras, ver **Limitações**), então os botões não pintam estado ativo, e
+  as três ações **não são duplicadas** no sheet "Ações".
 - **Fila / “A seguir”**: pill **Fila** no player (escondida quando a sessão não tem fila)
   abre um sheet com `MediaController.getQueue()` — número, título, artista, a faixa atual
   em accent com o glifo de play. Tocar uma linha chama
@@ -254,15 +263,20 @@ Com targetSdk 36 o *predictive back* vem ligado: o sistema deixa de chamar
   mostra **Tocar** no cabeçalho, numera as linhas e marca a que está tocando; tocar uma
   linha toca a coleção e salta para aquela faixa. Se o engine não montar a fila a tempo,
   cai para `playFromMediaId` da própria faixa.
-- **Ações**: sheet centrado com as `customActions`, linhas de 56 dp, bullet accent para
-  “Criar Estação”, feedback (“Favorito aplicado”, “Criando estação…”) e Fechar.
+- **Ações**: sheet centrado com as `customActions` restantes (Reprodução Automática,
+  Adicionar à Biblioteca, Criar Estação), linhas de 56 dp, bullet accent para
+  “Criar Estação”, feedback e Fechar. Aleatório/Repetir/Favorito saíram do sheet: são
+  botões do player.
 - **Mini player**: persistente em todas as telas, capa 40 dp, play/pause; toque fora do
   botão abre o player. No D-pad, DOWN de um card foca a barra e ENTER abre o player.
 - **Busca**: campo arredondado, resultados agrupados por tipo (Músicas/Álbuns/Artistas/
   Playlists) com capa, skeleton durante a consulta, estado vazio e estado sem conexão com
   “Tentar de novo” + fallback “Abrir a busca do Apple Music”. TV usa o IME do sistema.
   Tocar um resultado abre o nível correspondente (artista/álbum/playlist/faixa); **longa
-  pressão** continua tocando o resultado direto.
+  pressão** continua tocando o resultado direto. **Um GET por submit**: ENTER e
+  `IME_ACTION_SEARCH` (e o botão Buscar) com o mesmo termo em voo viram uma requisição
+  só, e respostas de uma consulta antiga são descartadas por token de geração — a última
+  consulta vence.
 - **Telas de detalhe**: `DetailScreen` empilha **artista → álbum → artista → faixa** com
   breadcrumb, botão ‹ e BACK nível a nível. Artista (arte, gêneros, todos os álbuns em
   grade, músicas principais), álbum (capa, título, artista clicável, ano, gênero, nº de
@@ -472,6 +486,8 @@ do último segmento do id, então os títulos em inglês da TV funcionam sem id 
 | `emulator-5554` (TV x86, 1.9.4, detalhes/D-pad) | Instalado por cima. D-pad: ENTER na hero → playlist detail, foco no **‹** (contorno accent); DOWN → faixa 1 focada, ENTER = `playFromMediaId pl.095…`, `queue size=50` (60), metadata `Midnight Sun`; BACK fecha o detalhe e devolve o foco à aba Início; telas de baixo com foco bloqueado enquanto o overlay está aberto. Busca `Angra` na loja US (19 resultados) → **artista** (27 álbuns, grade de 5) → **Rebirth** (breadcrumb `Angra › Rebirth`, 10 faixas com duração); `logcat -b crash` vazio. |
 | `RXCX100BZ5J` (arm64, 1.9.5, biblioteca) | Instalado por cima. **Biblioteca** com contagem (12 recentes · 18 playlists · 93 artistas · 281 álbuns), filtro local (`backstreet` → 1 resultado, **zero** chamadas amp-api) e seções; **artista** AC/DC → `/br/search?types=artists` → `/br/artists/5040714` (26 álbuns + top-songs) → **Back In Black** (10 faixas); **álbum da biblioteca** `A Capella - Single` → `/br/search?types=albums` → `/br/albums/1445027335` (1 faixa, gravadora/copyright), **Tocar** = `playFromMediaId 1445027335` (fila 1) e toque na faixa = mesma coleção; **playlist** `Backstreet Boys: essenciais` → `pl.331a…` (22 faixas, curador/descrição), **Tocar** (fila 22) e faixa 2 (`skipToQueueItem 1`); **playlist do usuário** `Músicas favoritas` degrada (“Faixas indisponíveis”) e **Tocar** toca pelo id de biblioteca (fila 4); `Ver tudo` de Artistas (93) → AC/DC → mesmo detalhe; BACK nível a nível; `logcat -b crash` vazio. |
 | `emulator-5554` (TV x86, 1.9.5, biblioteca/D-pad) | Instalado por cima. Biblioteca em 1080p com as seções do engine (`Shuffle Library`, `Recently Added`, `Playlists`, `Artists`, `Albums`) e contagens; D-pad DOWN: filtro → Shuffle → Recentes → “Ver tudo” de Playlists → “Ver tudo” de Artistas (93 itens) → ENTER = `AC/DC` (`/us/search?types=artists` → `/us/artists/5040714`, 25 álbuns) → DOWN = grade → ENTER = álbum (`/us/albums/574050396`); “Ver tudo” de Álbuns (281) → card `A War You Cannot Win` → detalhe (`/us/albums/1440920100`, 2012, 12 faixas, Metal) → RIGHT/ENTER em **Tocar** = `playFromMediaId 1440920100` (fila 12); DOWN da última seção → mini player; BACK volta nível a nível; `logcat -b crash` vazio. |
+| `RXCX100BZ5J` (arm64, 1.9.6, player/insets/busca) | Instalado por cima. Player com **Aleatório/Repetir/Favorito** (3 ações presentes) e `contentDescription` medido no `uiautomator` (`Aleatório`/`Repetir`/`Favorito`); toques enviaram `sendCustomAction ...SHUFFLE`, `...REPEAT` e `...FAVORITE` com “Aleatório alternado”/“Repetir alternado”/“Favorito alternado” na pílula de feedback; sheet **Ações** agora só com Reprodução Automática/Adicionar à Biblioteca/Criar Estação; girado para landscape (2340×1080) “Atualizações” termina em x=2148 e o mini player em x=2160, ambos fora da nav bar (que começa em ~2188); busca `daft` com ENTER+ENTER+Buscar = **um** `amp-api HTTP 200 /br/search?term=daft…` (18 resultados); Atualizações mostra `1.9.6 (10906)`; `logcat -b crash` vazio. |
+| `emulator-5554` (TV x86, 1.9.6, player/D-pad) | Instalado por cima. Player lado a lado com os três toggles na linha do cabeçalho; D-pad: UP (play → ‹), RIGHT (‹ → aleatório), ENTER = `sendCustomAction ...SHUFFLE` + “Aleatório alternado”; `logcat -b crash` vazio. |
 
 Evidências lado a lado com as referências dos companions
 (`.pipeline/revamp-tv/`, `.pipeline/revamp-car/` e as fotos de celular em
@@ -500,6 +516,14 @@ Extras da mesma rodada: `revamp-one-tv-home-focus.png` e
 `revamp-one-tv-action-station.png` (feedback de Criar Estação),
 `revamp-one-phone-home-playing.png` (mini player), `revamp-one-phone-seek.png`
 (seek) e `revamp-one-phone-account.png` (painel de conta).
+
+Onda 1 (1.9.6): `wave1a-player-phone.png` (player no celular com os três toggles),
+`wave1a-shuffle-feedback.png` (confirmação “Aleatório alternado”),
+`wave1a-actions-sheet.png` (sheet sem as três ações), `wave1a-land-home.png`
+(landscape: “Atualizações” e o play do mini player fora da nav bar),
+`wave1a-land-player.png` (player lado a lado com os toggles no cabeçalho),
+`wave1a-search-one-get.png` e `wave1a-search-logcat.txt` (um único GET `daft`),
+`wave1a-tv-player.png` e `wave1a-tv-feedback.png` (player e feedback na TV).
 
 Fila (1.9.2): `queue-02-player.png` e `queue-11-tv-player.png` (pill **Fila** no celular
 e na TV), `queue-03-panel.png` e `queue-12-tv-panel.png` (“A seguir” com a faixa atual em
@@ -545,6 +569,21 @@ e `library-20-tv-artist-detail.png`, `library-23-tv-library-album-detail.png` e
 
 ## Limitações / P1
 
+- **Aleatório/Repetir sem estado ativo**: o engine publica as ações, mas não o modo
+  resultante. Medido no `PlaybackState` (1.9.6): extras trazem flags de fila/formato
+  (`...EXTRA_NUM_REPEATABLE_TRACKS`, `EXO_SPEED`, `...PLAYBACK_STATE_EXTRA_AUDIO_VARIANT`,
+  `...EXTRA_CAN_EDIT_QUEUE`, `androidx.media.PlaybackStateCompat.Extras.KEY_MEDIA_ID`…) e
+  **nenhuma chave de shuffle/repeat**; `dumpsys media_session` também só mostra os
+  `custom actions` (Favorito/Aleatório/Repetir/Reprodução Automática/Adicionar à
+  Biblioteca/Criar Estação quando há faixa; Aleatório/Repetir/Reprodução Automática com a
+  sessão sem faixa). Por isso os botões só enviam a ação e confirmam; não pintam
+  ativo/inativo. O caso “ação ausente com o player aberto” não foi reproduzido.
+- **Altura do player no celular**: a linha dos toggles custa ~50 dp. No aparelho de teste
+  (780 dp de altura) sobra espaço; num aparelho de 640 dp de altura a linha de pills pode
+  encostar na barra de navegação (UNVERIFIED, sem device pequeno nesta rodada).
+- **Insets horizontais**: o conteúdo aplica left/right + `displayCutout`; em landscape a
+  barra de apps troca os atalhos rotulados por ícones (Buscar/Conta/Atualizações) porque a
+  fileira rotulada não cabe ao lado das abas — ver `wave1a-land-home.png`.
 - **Sem blur real**: o fundo do player é um gradiente escuro da cor dominante da capa
   (API 29 viável, sem `RenderEffect`/RenderScript nem blur em software). O visual é
   próximo do car-app, não idêntico ao desfoque do iOS.

@@ -30,7 +30,13 @@ import java.util.Locale;
 /**
  * Full-screen player: dark gradient derived from the cover's dominant colour, large
  * artwork, title/artist/album, seek bar with both times, circular transport controls
- * (prev 60 / play 80 / next 60), the "Criar Estação"/"Ações" actions and the queue.
+ * (prev 60 / play 80 / next 60), the shuffle/repeat/favorite toggles the session
+ * publishes, the "Criar Estação"/"Ações" actions and the queue.
+ *
+ * <p>The three toggles only appear while the session's {@code PlaybackState} carries the
+ * matching custom action; the engine does not publish the resulting shuffle/repeat
+ * state, so they send the action and show a transient confirmation instead of an active
+ * icon ({@link #showFeedback(String)}).
  *
  * <p>"Fila" opens the session queue ({@code MediaController.getQueue()}) as a sheet of
  * track rows with the current one highlighted; tapping a row calls
@@ -39,6 +45,11 @@ import java.util.Locale;
 public final class NowPlayingScreen {
 
     private static final String STATION = "CREATE_STATION";
+    private static final String SHUFFLE = "SHUFFLE";
+    private static final String REPEAT = "REPEAT";
+    private static final String FAVORITE = "FAVORITE";
+    /** How long the transient action confirmation stays on screen. */
+    private static final long FEEDBACK_MS = 1800L;
 
     private final Context context;
     private final ScreenHost host;
@@ -53,6 +64,11 @@ public final class NowPlayingScreen {
     private final CircleButton play;
     private final Pill station;
     private final Pill queue;
+    private final LinearLayout toggles;
+    private final CircleButton shuffle;
+    private final CircleButton repeat;
+    private final CircleButton favorite;
+    private final TextView feedback;
     private final LinearLayout extras;
     private final FrameLayout queuePanel;
     private final LinearLayout queueRows;
@@ -60,6 +76,18 @@ public final class NowPlayingScreen {
     private MediaClient.Snapshot latest = new MediaClient.Snapshot();
     private int lastArtworkHash;
     private boolean seekTracking;
+
+    /** Custom action ids this session publishes, or null when it does not. */
+    private String shuffleAction;
+    private String repeatAction;
+    private String favoriteAction;
+
+    private final Runnable hideFeedback = new Runnable() {
+        @Override
+        public void run() {
+            feedback.setVisibility(View.GONE);
+        }
+    };
 
     /** Structural signature of the queue currently rendered in the sheet. */
     private int queueSize = -1;
@@ -197,6 +225,44 @@ public final class NowPlayingScreen {
             }
         });
 
+        // Aleatório / Repetir / Favorito come from the session custom actions; each button
+        // stays GONE until the current PlaybackState publishes its action.
+        shuffle = toggle(Icons.SHUFFLE, "Aleatório");
+        shuffle.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                sendToggle(shuffleAction);
+            }
+        });
+        repeat = toggle(Icons.REPEAT, "Repetir");
+        repeat.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                sendToggle(repeatAction);
+            }
+        });
+        favorite = toggle(Icons.FAVORITE, "Favorito");
+        favorite.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                sendToggle(favoriteAction);
+            }
+        });
+        toggles = new LinearLayout(context);
+        toggles.setOrientation(LinearLayout.HORIZONTAL);
+        toggles.setGravity(Gravity.CENTER);
+        toggles.setVisibility(View.GONE);
+        LinearLayout.LayoutParams shuffleParams = new LinearLayout.LayoutParams(
+                Tokens.dp(44), Tokens.dp(44));
+        shuffleParams.rightMargin = Tokens.dp(8);
+        toggles.addView(shuffle, shuffleParams);
+        toggles.addView(repeat, new LinearLayout.LayoutParams(
+                Tokens.dp(44), Tokens.dp(44)));
+        LinearLayout.LayoutParams favoriteParams = new LinearLayout.LayoutParams(
+                Tokens.dp(44), Tokens.dp(44));
+        favoriteParams.leftMargin = Tokens.dp(8);
+        toggles.addView(favorite, favoriteParams);
+
         extras = new LinearLayout(context);
         extras.setOrientation(LinearLayout.HORIZONTAL);
         extras.setGravity(Gravity.CENTER);
@@ -208,6 +274,13 @@ public final class NowPlayingScreen {
                 ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
 
         if (Tokens.wide()) {
+            // Side-by-side player: the detail column has no vertical room left on a
+            // rotated phone (~360 dp tall), so the toggles sit in the header row next to
+            // Ações instead of taking a line of their own.
+            LinearLayout.LayoutParams togglesParams = new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+            togglesParams.rightMargin = Tokens.dp(10);
+            header.addView(toggles, header.getChildCount() - 1, togglesParams);
             buildWide(page, previous, next);
         } else {
             buildNarrow(page, previous, next);
@@ -217,12 +290,50 @@ public final class NowPlayingScreen {
         root.addView(page, new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
 
+        // Transient action confirmation; floats over the page so it never changes the
+        // player's vertical layout (portrait already fits it exactly).
+        feedback = Inter.text(context, "", 13f, Inter.SEMIBOLD, Tokens.TEXT);
+        feedback.setBackground(Shapes.rounded(0xE6000000, Tokens.RADIUS_PILL));
+        feedback.setPadding(Tokens.dp(16), Tokens.dp(7), Tokens.dp(16), Tokens.dp(7));
+        feedback.setVisibility(View.GONE);
+        FrameLayout.LayoutParams feedbackParams = new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT,
+                Gravity.TOP | Gravity.CENTER_HORIZONTAL);
+        feedbackParams.topMargin = Tokens.dp(64);
+        root.addView(feedback, feedbackParams);
+
         queueRows = new LinearLayout(context);
         queueRows.setOrientation(LinearLayout.VERTICAL);
         queueCount = Inter.text(context, "", Tokens.CAPTION, Inter.REGULAR, Tokens.TEXT_DIM);
         queuePanel = buildQueuePanel();
         root.addView(queuePanel, new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+    }
+
+    private CircleButton toggle(int icon, String description) {
+        CircleButton button = new CircleButton(context, icon, 44f, Tokens.SURFACE,
+                Tokens.TEXT, 20f);
+        button.setContentDescription(description);
+        return button;
+    }
+
+    private void sendToggle(String actionId) {
+        if (actionId == null) return;
+        showFeedback(host.sessionAction(actionId));
+    }
+
+    /** Full custom action id ending with {@code suffix}, or null when the session lacks it. */
+    private static String actionId(MediaClient.Snapshot snapshot, String suffix) {
+        MediaClient.Action action = snapshot.findActionEndingWith(suffix);
+        return action == null ? null : action.action;
+    }
+
+    private void showFeedback(String message) {
+        if (message == null || message.length() == 0) return;
+        feedback.setText(message);
+        feedback.setVisibility(View.VISIBLE);
+        feedback.removeCallbacks(hideFeedback);
+        feedback.postDelayed(hideFeedback, FEEDBACK_MS);
     }
 
     private void buildWide(LinearLayout page, CircleButton previous, CircleButton next) {
@@ -300,6 +411,11 @@ public final class NowPlayingScreen {
         body.addView(buildProgress(), progressParams);
         body.addView(buildControls(previous, next), new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        LinearLayout.LayoutParams togglesParams = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        togglesParams.gravity = Gravity.CENTER_HORIZONTAL;
+        togglesParams.topMargin = Tokens.dp(6);
+        body.addView(toggles, togglesParams);
         LinearLayout.LayoutParams extrasParams = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
         extrasParams.gravity = Gravity.CENTER_HORIZONTAL;
@@ -496,10 +612,14 @@ public final class NowPlayingScreen {
         seek.setId(View.generateViewId());
         station.setId(View.generateViewId());
         queue.setId(View.generateViewId());
+        int shuffleId = View.generateViewId();
+        int repeatId = View.generateViewId();
+        int favoriteId = View.generateViewId();
+        shuffle.setId(shuffleId);
+        repeat.setId(repeatId);
+        favorite.setId(favoriteId);
 
         close.setNextFocusDownId(previousId);
-        close.setNextFocusRightId(actionsId);
-        actions.setNextFocusDownId(previousId);
         previous.setNextFocusRightId(playId);
         play.setNextFocusLeftId(previousId);
         play.setNextFocusRightId(nextId);
@@ -507,11 +627,34 @@ public final class NowPlayingScreen {
         play.setNextFocusDownId(seek.getId());
         next.setNextFocusLeftId(playId);
         seek.setNextFocusUpId(playId);
-        seek.setNextFocusDownId(station.getId());
-        station.setNextFocusUpId(seek.getId());
         station.setNextFocusRightId(queue.getId());
         queue.setNextFocusLeftId(station.getId());
         queue.setNextFocusUpId(seek.getId());
+        shuffle.setNextFocusRightId(repeatId);
+        repeat.setNextFocusLeftId(shuffleId);
+        repeat.setNextFocusRightId(favoriteId);
+        favorite.setNextFocusLeftId(repeatId);
+        if (Tokens.wide()) {
+            // Header row: ‹, TOCANDO AGORA, toggles, Ações.
+            close.setNextFocusRightId(shuffleId);
+            favorite.setNextFocusRightId(actionsId);
+            actions.setNextFocusLeftId(favoriteId);
+            actions.setNextFocusDownId(previousId);
+            shuffle.setNextFocusDownId(previousId);
+            repeat.setNextFocusDownId(previousId);
+            favorite.setNextFocusDownId(previousId);
+            station.setNextFocusUpId(seek.getId());
+        } else {
+            // Toggles keep their own line between the transport and the pills.
+            close.setNextFocusRightId(actionsId);
+            actions.setNextFocusDownId(previousId);
+            seek.setNextFocusDownId(shuffleId);
+            shuffle.setNextFocusUpId(seek.getId());
+            repeat.setNextFocusUpId(seek.getId());
+            favorite.setNextFocusUpId(seek.getId());
+            favorite.setNextFocusDownId(station.getId());
+            station.setNextFocusUpId(favoriteId);
+        }
     }
 
     public View view() {
@@ -536,6 +679,15 @@ public final class NowPlayingScreen {
         station.setVisibility(snapshot.findActionEndingWith(STATION) != null
                 ? View.VISIBLE : View.GONE);
         queue.setVisibility(snapshot.queue.isEmpty() ? View.GONE : View.VISIBLE);
+        shuffleAction = actionId(snapshot, SHUFFLE);
+        repeatAction = actionId(snapshot, REPEAT);
+        favoriteAction = actionId(snapshot, FAVORITE);
+        shuffle.setVisibility(shuffleAction != null ? View.VISIBLE : View.GONE);
+        repeat.setVisibility(repeatAction != null ? View.VISIBLE : View.GONE);
+        favorite.setVisibility(favoriteAction != null ? View.VISIBLE : View.GONE);
+        boolean anyToggle = shuffleAction != null || repeatAction != null
+                || favoriteAction != null;
+        toggles.setVisibility(anyToggle ? View.VISIBLE : View.GONE);
         extras.setVisibility(station.getVisibility() == View.VISIBLE
                 || queue.getVisibility() == View.VISIBLE ? View.VISIBLE : View.GONE);
         if (isQueueOpen()) refreshQueue(snapshot);
@@ -554,6 +706,8 @@ public final class NowPlayingScreen {
 
     public void close() {
         closeQueue();
+        feedback.removeCallbacks(hideFeedback);
+        feedback.setVisibility(View.GONE);
         root.setVisibility(View.GONE);
     }
 

@@ -53,6 +53,10 @@ public final class SearchScreen {
     private final LinearLayout results;
     private final TextView status;
     private Skeleton skeleton;
+    /** Bumped for every request; responses from an older one are dropped. */
+    private int generation;
+    /** Term of the request running right now, so a double submit issues one GET. */
+    private String inFlightTerm;
 
     public SearchScreen(Context context, ScreenHost host, ArtworkLoader artwork,
                         CatalogSearch catalog) {
@@ -210,11 +214,16 @@ public final class SearchScreen {
     private void submit() {
         String term = input.getText().toString().trim();
         if (term.length() == 0) return;
+        // ENTER and IME_ACTION_SEARCH both arrive for one tap; while the same term is in
+        // flight the second submit is a duplicate, not a new query.
+        if (term.equals(inFlightTerm)) return;
         hideKeyboard();
         runSearch(term);
     }
 
     private void runSearch(final String term) {
+        final int token = ++generation;
+        inFlightTerm = term;
         stopSkeleton();
         results.removeAllViews();
         status.setText("Buscando \"" + term + "\"…");
@@ -224,6 +233,8 @@ public final class SearchScreen {
         catalog.search(term, new CatalogSearch.Callback() {
             @Override
             public void onResults(List<CatalogSearch.Result> found) {
+                if (token != generation) return;
+                inFlightTerm = null;
                 stopSkeleton();
                 results.removeAllViews();
                 if (found.isEmpty()) {
@@ -242,6 +253,8 @@ public final class SearchScreen {
 
             @Override
             public void onFailure(String message, boolean tokenMissing) {
+                if (token != generation) return;
+                inFlightTerm = null;
                 stopSkeleton();
                 results.removeAllViews();
                 status.setText(message);
@@ -336,6 +349,8 @@ public final class SearchScreen {
     }
 
     private void showInitial() {
+        generation++;
+        inFlightTerm = null;
         stopSkeleton();
         results.removeAllViews();
         status.setText("");
