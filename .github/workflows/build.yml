@@ -132,6 +132,21 @@ jobs:
       #
       # The companions link four dex files; mergeExtDex OOMs on the runner's default
       # heap (~2 GB), so the build runs with 4 GB heap and 1 GB metaspace.
+      - name: Warm the Gradle distribution
+        run: |
+          set -euo pipefail
+          chmod +x gradlew
+          for attempt in 1 2 3 4 5; do
+            if ./gradlew --version >/dev/null 2>&1; then
+              echo "gradle distribution ready (attempt $attempt)"
+              exit 0
+            fi
+            echo "gradle wrapper download failed (attempt $attempt), retrying in 15s"
+            sleep 15
+          done
+          echo "::error::could not download the Gradle distribution"
+          exit 1
+
       - name: Build patches bundle and companions
         env:
           GITHUB_ACTOR: ${{ secrets.GPR_USER != '' && secrets.GPR_USER || github.actor }}
