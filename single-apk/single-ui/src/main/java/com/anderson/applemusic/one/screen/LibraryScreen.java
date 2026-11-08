@@ -1,6 +1,7 @@
 package com.anderson.applemusic.one.screen;
 
 import android.content.Context;
+import android.content.SharedPreferences;
 import android.graphics.drawable.ColorDrawable;
 import android.os.Bundle;
 import android.text.Editable;
@@ -42,6 +43,8 @@ import com.anderson.applemusic.one.widget.Skeleton;
 
 import java.text.Normalizer;
 import java.util.ArrayList;
+import java.util.Collections;
+import java.util.Comparator;
 import java.util.List;
 import java.util.Locale;
 
@@ -65,6 +68,12 @@ public final class LibraryScreen implements ChildSink {
 
     /** Cards per shelf; "Ver tudo" opens the complete node and the local filter finds any of them. */
     private static final int MAX_CARDS = 20;
+
+    /** Persisted section order: engine/library order (recent) or A–Z, applied locally. */
+    private static final String PREFS = "one-library";
+    private static final String KEY_SORT = "sort";
+    private static final String SORT_RECENT = "recent";
+    private static final String SORT_AZ = "az";
 
     /** One library category: the browse node, its loaded items and its shelf. */
     private static final class Category {
@@ -98,7 +107,10 @@ public final class LibraryScreen implements ChildSink {
     private final ScrollView scroll;
     private final FrameLayout contentHost;
     private final LinearLayout body;
+    private final LinearLayout sortRow;
+    private final SharedPreferences prefs;
     private final List<Category> categories = new ArrayList<Category>();
+    private String sort;
 
     private LinearLayout page;
     /** Recycled list of filter results; the section shelves stay in {@link #scroll}. */
@@ -118,6 +130,8 @@ public final class LibraryScreen implements ChildSink {
         this.host = host;
         this.artwork = artwork;
         this.catalog = catalog;
+        this.prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
+        this.sort = prefs.getString(KEY_SORT, SORT_RECENT);
 
         root = new FrameLayout(context);
         root.setBackgroundColor(Tokens.BG);
@@ -147,6 +161,14 @@ public final class LibraryScreen implements ChildSink {
 
         outer.addView(header, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+
+        sortRow = new LinearLayout(context);
+        sortRow.setOrientation(LinearLayout.HORIZONTAL);
+        sortRow.setGravity(Gravity.CENTER_VERTICAL);
+        sortRow.setPadding(Tokens.dp(16), 0, Tokens.dp(16), Tokens.dp(6));
+        outer.addView(sortRow, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        renderSortRow();
 
         LinearLayout searchRow = new LinearLayout(context);
         searchRow.setOrientation(LinearLayout.HORIZONTAL);
@@ -428,17 +450,23 @@ public final class LibraryScreen implements ChildSink {
         category.items.clear();
         category.items.addAll(children);
         category.loaded = true;
+        renderShelf(category);
+        if (input.getText().length() > 0) buildResults(input.getText().toString().trim());
+    }
+
+    /** Paints one section in the persisted order; also called when the order changes. */
+    private void renderShelf(final Category category) {
         ShelfView shelf = category.shelf;
         if (shelf == null) return;
         shelf.cards().removeAllViews();
-        shelf.setItemCount(children.size());
-        if (children.isEmpty()) {
+        shelf.setItemCount(category.items.size());
+        if (category.items.isEmpty()) {
             shelf.setVisibility(View.GONE);
             updateSummary();
             return;
         }
         shelf.setVisibility(View.VISIBLE);
-        SeeAllCard seeAll = new SeeAllCard(context, children.size(), cardSize());
+        SeeAllCard seeAll = new SeeAllCard(context, category.items.size(), cardSize());
         seeAll.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {
@@ -446,13 +474,73 @@ public final class LibraryScreen implements ChildSink {
             }
         });
         shelf.addCard(seeAll);
-        int limit = Math.min(children.size(), MAX_CARDS);
+        List<MediaClient.Item> ordered = ordered(category);
+        int limit = Math.min(ordered.size(), MAX_CARDS);
         for (int i = 0; i < limit; i++) {
-            shelf.addCard(card(category, children.get(i)));
+            shelf.addCard(card(category, ordered.get(i)));
         }
         linkFocus();
         updateSummary();
-        if (input.getText().length() > 0) buildResults(input.getText().toString().trim());
+    }
+
+    /** A–Z is local; "recentes" keeps the order the engine delivered for that library node. */
+    private List<MediaClient.Item> ordered(Category category) {
+        if (!SORT_AZ.equals(sort) || category.kind == KIND_RECENT
+                || category.kind == KIND_RANDOM) {
+            return category.items;
+        }
+        List<MediaClient.Item> sorted = new ArrayList<MediaClient.Item>(category.items);
+        Collections.sort(sorted, new Comparator<MediaClient.Item>() {
+            @Override
+            public int compare(MediaClient.Item left, MediaClient.Item right) {
+                int byTitle = normalize(left.title).compareTo(normalize(right.title));
+                return byTitle != 0 ? byTitle : left.title.compareToIgnoreCase(right.title);
+            }
+        });
+        return sorted;
+    }
+
+    private void renderSortRow() {
+        sortRow.removeAllViews();
+        sortRow.addView(sortPill("A–Z", SORT_AZ), sortPillParams());
+        sortRow.addView(sortPill("Recentes", SORT_RECENT), sortPillParams());
+    }
+
+    private View sortPill(String label, final String value) {
+        boolean active = value.equals(sort);
+        Pill pill = active
+                ? Pill.accent(context, 0, label)
+                : Pill.surface(context, 0, label);
+        pill.setContentDescription(label + (active ? ", selecionado" : ""));
+        pill.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                setSort(value);
+            }
+        });
+        return pill;
+    }
+
+    private LinearLayout.LayoutParams sortPillParams() {
+        LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        params.rightMargin = Tokens.dp(8);
+        return params;
+    }
+
+    private void setSort(String value) {
+        if (value.equals(sort)) return;
+        sort = value;
+        prefs.edit().putString(KEY_SORT, sort).apply();
+        renderSortRow();
+        for (Category category : categories) {
+            if (category.loaded && !category.failed) renderShelf(category);
+        }
+        if (input.getText().length() > 0) {
+            buildResults(input.getText().toString().trim());
+        } else {
+            updateSummary();
+        }
     }
 
     private int cardSize() {
@@ -603,7 +691,7 @@ public final class LibraryScreen implements ChildSink {
         int total = 0;
         for (Category category : categories) {
             List<MediaClient.Item> matches = new ArrayList<MediaClient.Item>();
-            for (MediaClient.Item item : category.items) {
+            for (MediaClient.Item item : ordered(category)) {
                 if (matches(item, needle)) matches.add(item);
             }
             if (matches.isEmpty()) continue;
@@ -767,85 +855,9 @@ public final class LibraryScreen implements ChildSink {
 
     // --- navigation ----------------------------------------------------------------
 
-    /**
-     * Library rows carry only the persistent id (no catalogue id), so the rich screen is
-     * reached by resolving the name; a miss keeps the previous browse behaviour instead of
-     * dead-ending the tap.
-     */
+    /** Same resolution the search's local scope uses (library ids have no catalogue id). */
     private void open(final MediaClient.Item item) {
-        String last = lastSegment(item.id).toLowerCase(Locale.ROOT);
-        if (last.startsWith("6-")) {
-            resolveArtist(item);
-            return;
-        }
-        if (last.startsWith("3-")) {
-            resolveAlbum(item);
-            return;
-        }
-        if (last.startsWith("4-")) {
-            resolvePlaylist(item);
-            return;
-        }
-        if (item.playable) {
-            host.play(item);
-            return;
-        }
-        host.status("Item não reproduzível");
-    }
-
-    private void resolveArtist(final MediaClient.Item item) {
-        host.status("Abrindo " + item.title + "…");
-        catalog.findArtist(item.title, new CatalogSearch.MatchCallback() {
-            @Override
-            public void onMatch(CatalogSearch.Result match) {
-                host.openArtist(match.id, item.title,
-                        match.artworkUrl != null ? match.artworkUrl : item.artworkUri);
-            }
-
-            @Override
-            public void onFailure(String message) {
-                host.status("Artista sem catálogo · abrindo os álbuns da biblioteca");
-                host.openCollection(item.title, item.id, false);
-            }
-        });
-    }
-
-    private void resolveAlbum(final MediaClient.Item item) {
-        host.status("Abrindo " + item.title + "…");
-        catalog.findAlbumMatch(item.title, item.subtitle, new CatalogSearch.MatchCallback() {
-            @Override
-            public void onMatch(CatalogSearch.Result match) {
-                host.openAlbum(match.id, item.title, item.subtitle,
-                        match.artworkUrl != null ? match.artworkUrl : item.artworkUri);
-            }
-
-            @Override
-            public void onFailure(String message) {
-                host.status("Álbum sem catálogo · abrindo a lista de faixas");
-                host.openLibraryCollection(CollectionScreen.ALBUM, item.title, item.subtitle,
-                        item.id);
-            }
-        });
-    }
-
-    private void resolvePlaylist(final MediaClient.Item item) {
-        host.status("Abrindo " + item.title + "…");
-        catalog.findPlaylistMatch(item.title, item.subtitle,
-                new CatalogSearch.MatchCallback() {
-                    @Override
-                    public void onMatch(CatalogSearch.Result match) {
-                        host.openPlaylist(match.id, item.title, item.subtitle,
-                                match.artworkUrl != null ? match.artworkUrl
-                                        : item.artworkUri);
-                    }
-
-                    @Override
-                    public void onFailure(String message) {
-                        host.status("Playlist sem catálogo · abrindo a lista de faixas");
-                        host.openLibraryCollection(CollectionScreen.PLAYLIST, item.title,
-                                item.subtitle, item.id);
-                    }
-                });
+        LibraryOpener.open(host, catalog, item);
     }
 
     /** BACK first clears the local filter, then leaves the tab. */

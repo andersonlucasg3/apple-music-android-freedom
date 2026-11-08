@@ -83,8 +83,8 @@ Tokens espelhados dos companions Compose (`tv-app/TvTheme.kt`, `car-app/Theme.kt
 ## Build
 
 ```powershell
-./single-apk/build-one-apk.ps1 -PoneVersion 1.9.10         # versionCode 10910 derivado
-./single-apk/build-one-apk.ps1 -Abi arm64,arm32 -PoneVersion 1.9.10
+./single-apk/build-one-apk.ps1 -PoneVersion 1.9.11         # versionCode 10911 derivado
+./single-apk/build-one-apk.ps1 -Abi arm64,arm32 -PoneVersion 1.9.11
 ```
 
 O build compila a UI uma vez e gera, para cada ABI:
@@ -120,7 +120,7 @@ Auditoria do dex (falha o build se sobrar classe de fora):
 
 ```
 dexdump -l plain single-apk/out-one/dex/classes.dex | findstr "Class descriptor"
-# 252 classes, todas Lcom/anderson/applemusic/one/...
+# 262 classes, todas Lcom/anderson/applemusic/one/...
 ```
 
 ## Instalar / abrir
@@ -239,10 +239,11 @@ Com targetSdk 36 o *predictive back* vem ligado: o sistema deixa de chamar
   carregamento com skeleton; “Tocar agora” quando o nó é uma lista de reproduzíveis.
 - **Biblioteca**: tela própria com contagem por categoria, filtro local, linha
   **Aleatória** e seções (Adições Recentes, Playlists, Artistas, Álbuns) com cards,
-  “Ver tudo” e ícone por seção; artista/álbum/playlist de biblioteca abrem as telas de
-  detalhe resolvendo o id de catálogo pelo nome. Rádio continua em grade de estações
-  (`RadioScreen`), com breadcrumb, botão **‹** e drill-down; “Ver tudo” de uma prateleira
-  abre o `CollectionScreen` em overlay com o mesmo tratamento.
+  “Ver tudo”, ícone por seção e **ordenação A–Z / Recentes** persistida (1.9.11); artista/
+  álbum/playlist de biblioteca abrem as telas de detalhe resolvendo o id de catálogo pelo
+  nome. Rádio continua em grade de estações (`RadioScreen`), com breadcrumb, botão **‹** e
+  drill-down; “Ver tudo” de uma prateleira abre o `CollectionScreen` em overlay com o mesmo
+  tratamento.
 - **Navegação hierárquica**: artista → álbuns (browse), álbum → faixas e playlist → faixas
   (amp-api), com **Tocar** a coleção inteira e toque numa faixa que já começa nela. Detalhes
   de ids e degradação na seção **Navegação hierárquica**.
@@ -274,14 +275,17 @@ Com targetSdk 36 o *predictive back* vem ligado: o sistema deixa de chamar
   botões do player.
 - **Mini player**: persistente em todas as telas, capa 40 dp, play/pause; toque fora do
   botão abre o player. No D-pad, DOWN de um card foca a barra e ENTER abre o player.
-- **Busca**: campo arredondado, resultados agrupados por tipo (Músicas/Álbuns/Artistas/
-  Playlists) com capa, skeleton durante a consulta, estado vazio e estado sem conexão com
-  “Tentar de novo” + fallback “Abrir a busca do Apple Music”. TV usa o IME do sistema.
-  Tocar um resultado abre o nível correspondente (artista/álbum/playlist/faixa); **longa
-  pressão** continua tocando o resultado direto. **Um GET por submit**: ENTER e
-  `IME_ACTION_SEARCH` (e o botão Buscar) com o mesmo termo em voo viram uma requisição
-  só, e respostas de uma consulta antiga são descartadas por token de geração — a última
-  consulta vence.
+- **Busca**: campo arredondado, **escopo Catálogo / Biblioteca**, resultados agrupados por
+  tipo (Músicas/Álbuns/Artistas/Playlists) com capa, skeleton durante a consulta, estado
+  vazio e estado sem conexão com “Tentar de novo” + fallback “Abrir a busca do Apple Music”.
+  Os **últimos 10 termos** ficam em `SharedPreferences` e aparecem com **Limpar** quando o
+  campo está vazio; tocar num recente preenche e busca. O escopo **Biblioteca** filtra
+  **localmente** artistas/álbuns/playlists já carregados de `/library` (sem nenhum GET);
+  o **Catálogo** usa a amp-api. TV usa o IME do sistema. Tocar um resultado abre o nível
+  correspondente (artista/álbum/playlist/faixa); **longa pressão** continua tocando o
+  resultado direto. **Um GET por submit**: ENTER e `IME_ACTION_SEARCH` (e o botão Buscar)
+  com o mesmo termo em voo viram uma requisição só, e respostas de uma consulta antiga são
+  descartadas por token de geração — a última consulta vence.
 - **Telas de detalhe**: `DetailScreen` empilha **artista → álbum → artista → faixa** com
   breadcrumb, botão ‹ e BACK nível a nível. Artista (arte, gêneros, todos os álbuns em
   grade, músicas principais), álbum (capa, título, artista clicável, ano, gênero, nº de
@@ -295,7 +299,7 @@ Com targetSdk 36 o *predictive back* vem ligado: o sistema deixa de chamar
 - **Conta**: com sessão ativa, mostra o **perfil** do engine (avatar com a inicial,
   nome, Apple ID e assinatura); sem sessão, mostra o convite e o botão oficial de login
   do Apple ID (fluxo acima). O estado é relido a cada abertura do painel.
-- **Atualizações**: painel com versão instalada (`1.9.10 (10910)`), versão do engine,
+- **Atualizações**: painel com versão instalada (`1.9.11 (10911)`), versão do engine,
   mensagem de estado, progresso, Verificar / Baixar e instalar / Cancelar / Fechar.
   Compara `one-<abi>.versionCode`, baixa, confere SHA-256 e instala via `PackageInstaller`.
 - **Estados**: vazio, erro e sem conexão com ícone e texto (`EmptyState`) em Início,
@@ -483,6 +487,66 @@ do último segmento do id, então os títulos em inglês da TV funcionam sem id 
   inicial; “Aleatória” não tem lista de faixas (`/library/songs` = 0 filhos), por isso
   não existe categoria “Músicas” — só o atalho que toca a biblioteca embaralhada.
 
+### Biblioteca: ordenação, “Ver tudo” e “Músicas” (1.9.11)
+
+**Ordenação local e persistida.** Duas pills no topo da Biblioteca alternam **A–Z** e
+**Recentes**. A–Z ordena `Artistas`, `Álbuns` e `Playlists` no cliente (mesma normalização
+NFD do filtro, então “Áqua” cai em A), inclusive os resultados do filtro; **Recentes**
+mantém a ordem que o engine entregou para o nó (a seção Adições Recentes continua
+cronológica). A escolha vai para `SharedPreferences` (`one-library`/`sort`) e foi
+verificada depois de `force-stop` + reabrir (`A–Z, selecionado` no dump; `wave2c-12`).
+Nenhuma requisição é feita para ordenar.
+
+**“Ver tudo” completo.** O `SeeAllCard` mostra a contagem real do nó (12/18/93/281) e
+abre o `CollectionScreen` do nó inteiro, que desde a 1.9.9 usa `ListView` reciclado.
+Medido: “Ver tudo, 281 itens” → lista com **281 itens**, `perf collection list items=281
+rows=9 views=55` (`wave2c-11`); a contagem do cabeçalho do overlay é a mesma do card.
+
+**“Músicas” não existe na fonte (investigado no código do engine).** O provider do Android
+Auto (`analysis/jadx_src/sources/p032b7/A.java`, usado por `C3124a`) monta o nó
+`/library` nesta ordem: `songs` (que é o atalho **Shuffle Library**, construído como
+`LibraryCollectionPlaybackQueueItemProvider` com `shuffleMode(1)`), `recently_added`,
+`playlists`, `artists`, `albums`. O item `songs` é `playable` e um **leaf**: não tem
+filhos, e o caso “nó songs com filhos” só acrescenta o atalho `downloaded_music` (também
+playable, sem lista) — não há categoria navegável de faixas. A tela “Músicas” do app
+original é uma consulta **local** à `MediaLibrary` do próprio engine, que não é exposta
+pela árvore de browse do `MediaBrowser`. A rota de biblioteca da amp-api
+(`/v1/me/library/*`) exigiria o *music-user-token* do token store do engine, que não está
+disponível para a UI (MUT ausente/vazio — ver **UNVERIFIED**). Conclusão: **não há**
+categoria “Músicas” a acrescentar sem inventar dados; mantivemos o atalho **Aleatória**
+(`playFromMediaId(__AUTO_ROOT__/library/songs)`, fila medida de 101 itens) e documentamos
+o limite.
+
+### Busca: recentes e escopo (1.9.11)
+
+**Recentes.** Os últimos **10** termos ficam em `SharedPreferences`
+(`one-search`/`recent`, um por linha, mais novo primeiro, sem duplicata por
+caixa/acento). Com o campo vazio, o painel mostra “Buscas recentes” + contagem + pill
+**Limpar**, e cada termo é uma `ListRow` com ícone de busca; tocar preenche o campo e
+dispara a busca no escopo atual. Persistiu após `force-stop` + reabrir
+(`wave2c-03/04/13`) e o “Limpar” esvazia a lista e volta ao estado inicial.
+
+**Escopo Catálogo / Biblioteca.** Duas pills logo abaixo do campo; a ativa fica em accent
+e o rótulo acessível ganha “, selecionado”. **Catálogo** mantém a amp-api (1 GET por
+submit, token de geração descartando resposta antiga). **Biblioteca** não faz requisição:
+`OneActivity.librarySections()` lê as categorias **já carregadas** do cache de browse do
+`MediaClient` (`/library` → recentes/playlists/artistas/álbuns; 12/18/93/281) e o
+`SearchScreen` filtra localmente com a mesma normalização do filtro da Biblioteca. Se a
+Biblioteca ainda não foi aberta nesta sessão, o escopo mostra “Abra a Biblioteca uma vez”
++ **Abrir Biblioteca** — nunca dispara rede para “resolver” a busca. O snapshot fica num
+campo estático do `OneActivity`, então **girar** preserva escopo, termo e resultados mesmo
+com o cache novo do `MediaClient` (`wave2c-08`, `root arrived, tab=2 (restored)`); a
+escolha de escopo também vai no bundle (`one.search.scope`). Tocar um resultado de
+biblioteca usa o mesmo `LibraryOpener` da Biblioteca (resolve o id de catálogo por nome),
+então o filtro em si continua sem HTTP.
+
+**Estados e não-regressão.** Vazio (com/sem recentes), skeleton durante o GET, “Nenhum
+resultado para X” (`wave2c-15`), erro de rede com **Tentar de novo** + fallback do engine
+(`wave2c-16/17`) e “N resultados na Biblioteca”. O cache do último termo no Catálogo evita
+repetir o GET ao alternar de escopo; ENTER duplicado continua virando uma só requisição —
+medido: `daft` e `angra` produziram **um** `amp-api HTTP 200` cada (`wave2c-02`,
+`wave2c-14`).
+
 ### Rotação e estado (1.9.7)
 
 O manifest do engine não declara `configChanges`, então girar (ou mudar `wm size`)
@@ -495,10 +559,11 @@ destrói e recria a activity. A 1.9.6 voltava para o Início e recarregava o bro
 | aba selecionada | `OneActivity` (`one.tab` + `one.tab.id`) | `onRoot` escolhe a aba por id (fallback índice) em vez de `selectTab(0)` |
 | coleção "Ver tudo" (overlay) | `CollectionScreen` (`one.collection.*`: ids/títulos/tipos + breadcrumb) | pilha reconstruída e só o nível do topo é resubscreito; BACK continua descendo |
 | detalhe (artista → álbum → …) | `DetailScreen` (`one.detail.*`) | breadcrumb e nível do topo voltam; só ele é buscado na amp-api |
-| busca | `SearchScreen` (`one.search.open/term/scroll`) | painel reaberto com o termo e **uma** nova consulta |
+| busca | `SearchScreen` (`one.search.open/term/scope/scroll`) | painel reaberto com o termo, o **escopo** Catálogo/Biblioteca e **uma** nova consulta (ou o filtro local) |
 | player / fila | `OneActivity` (`one.player.open/queue`) | `openPlayer()` + sheet "A seguir" disparados no primeiro snapshot da sessão |
 | ações, conta, atualizações | `OneActivity` | sheet de ações reabre quando a sessão publica as mesmas ações; painéis abrem direto |
 | filtro da Biblioteca | `LibraryScreen` (`one.library.filter`) | aplicado antes do primeiro layout; resultados refeitos a partir do que já carregou |
+| ordenação da Biblioteca | `SharedPreferences` (`one-library`/`sort`) | A–Z/Recentes aplicada antes das seções e do filtro; persiste entre execuções |
 | scroll (Início, Biblioteca, detalhe, coleção, busca) | `widget/ScrollMemory` (fração do alcance) | reaplicado quando o conteúdo mede; a fração absorve a mudança de tamanho dos cards |
 
 Detalhes de implementação:
@@ -668,6 +733,21 @@ Evidências: `wave2b-phone-updates.png` / `.xml` (Instalada 1.9.10/Engine 7.0.0)
 `wave2b-phone-player.png`, `wave2b-reconnect-backoff-tempbuild.txt`,
 `wave2b-background-queue.txt`, `wave2b-phone-after-background.png`.
 
+Onda 2c (1.9.11, busca/biblioteca): `wave2c-01-search-initial.png` (vazio + escopo),
+`wave2c-02-search-catalog.png` / `wave2c-14-recent-tap.png` (catálogo e recente tocado),
+`wave2c-03-recents.png` / `wave2c-04-recents-persist.png` / `wave2c-13-recents-final.png`
+(recentes com **Limpar** e persistência), `wave2c-19-recents-cleared.png` (Limpar esvazia e
+volta ao estado inicial), `wave2c-15-search-empty.png` (nenhum resultado),
+`wave2c-16-search-error.png` / `wave2c-17-search-retry.png` (sem conexão e retry),
+`wave2c-06-search-library.png` / `wave2c-07-search-library-angra.png` /
+`wave2c-08-search-library-rotated.png` (escopo Biblioteca com 0 `amp-api HTTP`, girado),
+`wave2c-05-library-recent.png` / `wave2c-09-library-az.png` /
+`wave2c-10-library-az-artists.png` / `wave2c-12-library-sort-persist.png` (ordenação e
+persistência), `wave2c-11-seeall-albums.png` (“Ver tudo”, 281), e os dumps
+`wave2c-*.xml`. TV x86: `wave2c-tv-01-home.png`, `wave2c-tv-02-search.png`,
+`wave2c-tv-03-library.png`, `wave2c-tv-04-search-library.png`,
+`wave2c-tv-05-search-library-portrait.png`.
+
 ## Validado
 
 | Device | Resultado |
@@ -695,6 +775,8 @@ Evidências: `wave2b-phone-updates.png` / `.xml` (Instalada 1.9.10/Engine 7.0.0)
 | `emulator-5554` (TV x86, 1.9.9, performance/D-pad) | Instalado por cima. Início **6/16** e DOWN pelos cards carrega os lotes até 16; DOWN da aba → hero → cards; lista de 281 com 7 linhas e foco por linha (ENTER abre “A Decade and a Half”); fila com 29 faixas/5 linhas/31 views, foco na linha atual e ENTER = `skipToQueueItem 1` (metadata `Rulers of the Mind`); `logcat -b crash` vazio. |
 | `RXCX100BZ5J` (arm64, 1.9.10, versão/reconexão) | Instalado por cima (`install -r`), `firstInstallTime` de 2026-11-05 preservado. `dumpsys package` = `versionCode=10910 versionName=1.9.10`; badging idem; painel Atualizações com `Instalada 1.9.10 (10910)` / `Engine 7.0.0 (1614)` e log `updates.json: sem atualização para esta ABI (arm64-v8a, instalada 1.9.10 (10910))`. Faixas: `MEDIA_NEXT` no background atualizou a fila por callback (`queue changed`, 55→54→53) e o player voltou com a faixa nova; `OneActivity` parada em `dumpsys activity`; rotação 2× reconectou o browser e restaurou a fila de 55 itens; `logcat -b crash` vazio. |
 | `emulator-5554` (TV x86, 1.9.10, backoff) | APK x86 instalado por cima. Com um seam temporário de falha de conexão (removido antes do commit): `reconnect in 500 ms` → `1000 ms` → `2000 ms` → `MediaBrowser connected`/`root arrived`, sem reiniciar a activity (`wave2b-reconnect-backoff-tempbuild.txt`); `logcat -b crash` vazio. |
+| `RXCX100BZ5J` (arm64, 1.9.11, busca/biblioteca) | Instalado por cima (`versionName=1.9.11`, `versionCode=10911`). **Busca**: `daft`/`angra` = um `amp-api HTTP 200` cada; recentes (3 termos) sobreviveram a `force-stop` + reabrir (`wave2c-03/04/13`); escopo **Biblioteca** `angra` → 3 resultados (Artistas 1, Álbuns 2) com **zero** `amp-api HTTP` (`wave2c-07`); girado com o painel aberto → `Biblioteca, selecionado`, termo e resultados preservados (`wave2c-08`); erro com Wi-Fi/dados desligados (“Sem conexão” + **Tentar de novo**) e retry após religar → resposta da amp-api (`wave2c-16/17`); termo aleatório → “Nenhum resultado para …” (`wave2c-15`). **Biblioteca**: contagens 12/18/93/281; **A–Z** ordena Artistas/Álbuns/Playlists e persiste após reiniciar (`wave2c-09/10/12`); **Ver tudo, 281 itens** abre a lista completa com 9 linhas/55 views (`perf collection list items=281 rows=9 views=55`, `wave2c-11`); `logcat -b crash` vazio. |
+| `emulator-5554` (TV x86, 1.9.11, busca/biblioteca) | x86 instalado por cima. Biblioteca com 12/18/93/281 e pills **A–Z/Recentes**; Busca → escopo **Biblioteca** `angra` = 3 resultados (1 artista + 2 álbuns) **sem** `amp-api HTTP` (`wave2c-tv-04`); `wm size 1080x1920` com a busca aberta preservou escopo/termo/resultados (`wave2c-tv-05`); `logcat -b crash` vazio. |
 
 Evidências lado a lado com as referências dos companions
 (`.pipeline/revamp-tv/`, `.pipeline/revamp-car/` e as fotos de celular em
@@ -843,10 +925,18 @@ e `library-20-tv-artist-detail.png`, `library-23-tv-library-album-detail.png` e
   aparece no `DetailScreen` (resolvida na amp-api).
 - **Biblioteca mostra 20 cards por seção**: as listas completas (93 artistas, 281 álbuns)
   ficam atrás de **Ver tudo** e o filtro local procura em todos os itens já carregados; não
-  há busca de servidor nem carregamento incremental dentro da aba.
-- **“Aleatória” sem lista de faixas**: `/library/songs` é `playable` e devolve 0 filhos,
-  então a Biblioteca não tem a categoria “Músicas” — o atalho toca a biblioteca
-  embaralhada (fila medida: 101 itens).
+  há busca de servidor nem carregamento incremental dentro da aba. A ordenação **A–Z** é
+  aplicada às seções e ao filtro, mas o overlay de **Ver tudo** continua na ordem da fonte
+  (não há parâmetro de ordenação no `CollectionScreen`).
+- **“Músicas” não existe no browse**: `/library/songs` é um leaf `playable` (0 filhos) cujo
+  único papel é o **Shuffle Library**; a lista de faixas do app original vem de uma consulta
+  local à `MediaLibrary` do engine (`LibrarySections`), fora da árvore do `MediaBrowser`.
+  A rota `/v1/me/library/songs` da amp-api exigiria o MUT, que não é legível pela UI — não
+  foi exercitada (UNVERIFIED). O atalho **Aleatória** continua sendo o caminho.
+- **Busca no escopo Biblioteca depende do que já foi carregado**: ela lê o cache de browse
+  da Biblioteca (sem rede) e, se a aba nunca abriu no processo, mostra **Abrir Biblioteca**
+  em vez de buscar. O snapshot estático sobrevive à rotação, mas **não** à morte do
+  processo; nesse caso é preciso reabrir a Biblioteca uma vez.
 - **`one-x86`** não é publicado pelo CI (só arm32/arm64); o build local gera para o
   emulador.
 - **Login**: o diálogo AMS é hospedado pela `MainActivity` do engine; a UI o fecha

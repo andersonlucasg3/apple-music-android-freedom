@@ -87,6 +87,9 @@ public final class OneActivity extends Activity
     private static final int KIND_RADIO = 1;
     private static final int KIND_LIBRARY = 2;
 
+    /** Stable library tab node; the cache is keyed by it even before the tabs arrive. */
+    private static final String LIBRARY_ROOT = "__AUTO_ROOT__/library";
+
     /** Saved state keys: the screen the user was on, not just the tab. */
     private static final String KEY_TAB = "one.tab";
     private static final String KEY_TAB_ID = "one.tab.id";
@@ -162,6 +165,8 @@ public final class OneActivity extends Activity
     private AccountScreen accountScreen;
 
     private final List<MediaClient.Item> tabs = new ArrayList<MediaClient.Item>();
+    /** Library sections kept in memory so a rotation does not lose the local search scope. */
+    private static List<LibrarySection> librarySnapshot;
     /** Browse subscriptions waiting for children; more than one screen can want a node. */
     private final Map<String, List<ChildSink>> pending =
             new HashMap<String, List<ChildSink>>();
@@ -325,6 +330,7 @@ public final class OneActivity extends Activity
         disposeTabScreen();
         pending.clear();
         tabs.clear();
+        librarySnapshot = null;
         topBar.setTabs(new String[0], -1);
         selectedTab = -1;
         closeCollectionOverlay();
@@ -781,6 +787,51 @@ public final class OneActivity extends Activity
         }
         sinks.add(sink);
         loadAsync(parentId);
+    }
+
+    @Override
+    public List<LibrarySection> librarySections() {
+        List<LibrarySection> built = buildLibrarySections();
+        if (built != null) {
+            librarySnapshot = built;
+            return built;
+        }
+        // New activity (rotation) has a fresh client cache; the snapshot survives it.
+        return librarySnapshot;
+    }
+
+    /** Reads the library sections from the browse cache; null when the tab never loaded. */
+    private List<LibrarySection> buildLibrarySections() {
+        String rootId = null;
+        for (MediaClient.Item tab : tabs) {
+            if (kindOf(tab) == KIND_LIBRARY) {
+                rootId = tab.id;
+                break;
+            }
+        }
+        if (rootId == null) rootId = LIBRARY_ROOT;
+        List<MediaClient.Item> categories = client.cachedChildren(rootId);
+        if (categories == null) return null;
+        List<LibrarySection> sections = new ArrayList<LibrarySection>();
+        for (MediaClient.Item category : categories) {
+            List<MediaClient.Item> items = client.cachedChildren(category.id);
+            if (items == null || items.isEmpty()) continue;
+            sections.add(new LibrarySection(category.title, items));
+        }
+        return sections;
+    }
+
+    @Override
+    public void openLibrary() {
+        if (searchScreen.isOpen()) closeSearch();
+        for (int i = 0; i < tabs.size(); i++) {
+            if (kindOf(tabs.get(i)) == KIND_LIBRARY) {
+                selectTab(i);
+                refreshAccessibility();
+                return;
+            }
+        }
+        setStatus("Biblioteca indisponível");
     }
 
     @Override
