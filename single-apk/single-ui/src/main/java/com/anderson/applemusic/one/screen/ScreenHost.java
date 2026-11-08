@@ -68,6 +68,13 @@ public interface ScreenHost {
     /** Opens the engine's official account/subscription screen. */
     void openAccountSummary();
 
+    /** Whether the engine's own settings screen can be reached: the navigation helper class
+     * and the {@code action_settings} destination both exist in this engine build. */
+    boolean engineSettingsAvailable();
+
+    /** Opens the engine's settings screen inside its {@code MainActivity}. */
+    void openEngineSettings();
+
     void openUpdates();
 
     void openPlayer();

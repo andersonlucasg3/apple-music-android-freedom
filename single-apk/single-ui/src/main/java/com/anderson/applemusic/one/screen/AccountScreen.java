@@ -6,6 +6,7 @@ import android.view.View;
 import android.view.ViewGroup;
 import android.widget.FrameLayout;
 import android.widget.LinearLayout;
+import android.widget.ScrollView;
 import android.widget.TextView;
 
 import com.anderson.applemusic.one.media.AccountSession;
@@ -51,7 +52,6 @@ public final class AccountScreen {
         panel.setOrientation(LinearLayout.VERTICAL);
         panel.setGravity(Gravity.CENTER_HORIZONTAL);
         panel.setPadding(Tokens.dp(24), Tokens.dp(26), Tokens.dp(24), Tokens.dp(20));
-        panel.setBackground(Shapes.rounded(Tokens.SURFACE, Tokens.RADIUS_SHEET));
         // Consume taps inside the panel without adding a clickable a11y node.
         panel.setOnTouchListener(new View.OnTouchListener() {
             @Override
@@ -59,12 +59,22 @@ public final class AccountScreen {
                 return true;
             }
         });
-        Shapes.clip(panel, Tokens.RADIUS_SHEET);
+
+        // The panel outgrows the 360 dp of a rotated phone; a ScrollView keeps every link
+        // reachable there instead of clipping "Conta Apple"/"Ajustes"/"Fechar".
+        ScrollView scroll = new ScrollView(context);
+        scroll.setBackground(Shapes.rounded(Tokens.SURFACE, Tokens.RADIUS_SHEET));
+        scroll.setVerticalScrollBarEnabled(false);
+        scroll.setOverScrollMode(View.OVER_SCROLL_NEVER);
+        scroll.setFocusable(false);
+        scroll.addView(panel, new ScrollView.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        Shapes.clip(scroll, Tokens.RADIUS_SHEET);
 
         int width = Math.min(Tokens.dp(460), Math.round(Tokens.screenWidth() * 0.88f));
         FrameLayout.LayoutParams panelParams = new FrameLayout.LayoutParams(
                 width, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.CENTER);
-        root.addView(panel, panelParams);
+        root.addView(scroll, panelParams);
     }
 
     /** Rebuilds the panel contents from the account the engine has right now. */
@@ -110,15 +120,39 @@ public final class AccountScreen {
         addField("ASSINATURA", profile.subscription);
         addAccountLink("Gerenciar assinatura");
         addAccountLink("Conta Apple");
+        addEngineSettingsLink();
 
         TextView hint = Inter.text(context,
                 "Gerenciar assinatura e Conta Apple abrem a tela oficial do Apple Music. "
+                        + "Ajustes do Apple Music abre a tela do engine. "
                         + "Sair da conta não é feito por este painel.",
                 Tokens.CAPTION, Inter.REGULAR, Tokens.TEXT_DIM);
         hint.setGravity(Gravity.CENTER);
         hint.setLineSpacing(Tokens.dp(3), 1f);
         hint.setPadding(0, Tokens.dp(16), 0, 0);
         panel.addView(hint);
+    }
+
+    /**
+     * Engine settings shortcut. The manifest's {@code equalizer.EQActivity} is declared
+     * without a theme and its fragment crashes with a NullPointerException in engine
+     * 7.0.0, so the equalizer entry stays hidden instead of taking the app down; the
+     * equalizer toggle itself lives inside these settings.
+     */
+    private void addEngineSettingsLink() {
+        if (!host.engineSettingsAvailable()) return;
+        Pill link = Pill.surface(context, 0, "Ajustes do Apple Music");
+        link.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                host.closeAccount();
+                host.openEngineSettings();
+            }
+        });
+        LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        params.topMargin = Tokens.dp(10);
+        panel.addView(link, params);
     }
 
     private void addField(String label, String value) {

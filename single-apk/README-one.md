@@ -83,8 +83,8 @@ Tokens espelhados dos companions Compose (`tv-app/TvTheme.kt`, `car-app/Theme.kt
 ## Build
 
 ```powershell
-./single-apk/build-one-apk.ps1 -PoneVersion 1.9.12         # versionCode 10912 derivado
-./single-apk/build-one-apk.ps1 -Abi arm64,arm32 -PoneVersion 1.9.12
+./single-apk/build-one-apk.ps1 -PoneVersion 1.9.13         # versionCode 10913 derivado
+./single-apk/build-one-apk.ps1 -Abi arm64,arm32 -PoneVersion 1.9.13
 ```
 
 O build compila a UI uma vez e gera, para cada ABI:
@@ -301,9 +301,11 @@ Com targetSdk 36 o *predictive back* vem ligado: o sistema deixa de chamar
   estações (`9-`) tocam.
 - **Conta**: com sessão ativa, mostra o **perfil** do engine (avatar com a inicial,
   nome, Apple ID e assinatura) e os links **Gerenciar assinatura** / **Conta Apple**, que
-  abrem a tela Account oficial (um BACK volta ao painel); sem sessão, mostra o convite e o
-  botão oficial de login do Apple ID (fluxo acima). O estado é relido a cada abertura.
-- **Atualizações**: painel com versão instalada (`1.9.12 (10912)`), versão do engine,
+  abrem a tela Account oficial (um BACK volta ao painel), e **Ajustes do Apple Music**, que
+  abre a tela de Ajustes do engine (um BACK volta ao painel; ver Onda 3a); sem sessão,
+  mostra o convite e o botão oficial de login do Apple ID (fluxo acima). O estado é relido
+  a cada abertura.
+- **Atualizações**: painel com versão instalada (`1.9.13 (10913)`), versão do engine,
   mensagem de estado, progresso, Verificar / Baixar e instalar / Cancelar / Fechar.
   Compara `one-<abi>.versionCode`, baixa, confere SHA-256 e instala via `PackageInstaller`.
 - **Estados**: vazio, erro e sem conexão com ícone e texto (`EmptyState`) em Início,
@@ -593,6 +595,58 @@ editar arquivos de conta. Medido: `account BACK hooked on the engine back dispat
 `account screen BACK, returning to the UI`; `logcat -b crash` vazio, painel ainda aberto ao
 voltar (`wave2d-account-back-phone.png`, `wave2d-account-back-tv.png`).
 
+### Onda 3a (1.9.13): letras e Ajustes do engine
+
+**Letras: o endpoint não devolve letra para o token da UI — nada foi inventado.** A sonda
+rodou no `RXCX100BZ5J` (arm64/API 36, logado, `br`/`pt-BR`) com o **developer token** que o
+`CatalogSearch` já lê de `files/datastore/encrypted_tokens.preferences_pb`
+(`key_api_token_musicAndroid`). Para a faixa `1411628233` (Imagine Dragons — *Believer*):
+
+| Requisição | Resultado |
+|---|---|
+| `GET /v1/catalog/br/songs/1411628233?l=pt-BR` | **HTTP 200**, `attributes.hasLyrics=true`, `attributes.hasTimeSyncedLyrics=true` |
+| `GET /v1/catalog/br/songs/1411628233/lyrics?l=pt-BR` | **HTTP 404** |
+| idem + `&extend=ttmlLocalizations` | **HTTP 404** |
+| idem sem `l`, e com storefront `us` | **HTTP 404** |
+
+Corpo do 404: `{"errors":[{"title":"No related resources","detail":"No related resources
+found for lyrics","status":"404","code":"40403"}]}`. Ou seja, o token e o id estão válidos
+(a faixa responde 200 e declara letra), mas a relação `lyrics` não é exposta a este cliente;
+não há `data[0].attributes.ttml` nem `lyrics` para parsear. O DataStore do token só tem a
+chave do developer token (sem `music-user-token`). Como a regra da Onda 3 era **só
+implementar se o endpoint respondesse**, o painel "Letra", o cache por `songId` e o
+`EmptyState` "Sem letra" **não foram adicionados**; o log bruto está em
+[`evidence/wave3a-lyrics-probe.txt`](evidence/wave3a-lyrics-probe.txt). O engine tem os
+modelos `attributes.ttml`/`ttmlLocalizations` no `mediaapi` e uma UI nativa de letras, mas
+esse caminho não é o `GET .../songs/{id}/lyrics` com o token da UI.
+
+**Ajustes do engine.** O engine **não tem activity de Ajustes**: o `SettingsFragment`
+(`com.apple.android.music.settings2.fragment.SettingsFragment`) é um destino de navegação
+dentro da `MainActivity` (`com.apple.android.music.common.MainActivity`), com id
+`R.id.action_settings = 0x7f0a008c` no grafo `nav_graph.xml`. O painel **Conta** (logado)
+ganhou o link **Ajustes do Apple Music**; `OneActivity` inicia a `MainActivity` explícita,
+espera o `NavHost` ficar pronto e chama o helper R8 `M9.p.a(Context, id)` por reflexão.
+O mesmo gancho de BACK usado na tela de conta troca o fallback do dispatcher do engine por
+`finish()`: **um BACK volta para esta UI**. Se o helper/nav destination não existir na
+build, `engineSettingsAvailable()` devolve `false` e o link some (sem crash). Medido:
+`engine settings opened id=0x7f0a008c` → tela **Ajustes** do engine (BIBLIOTECA, ÁUDIO) →
+`account BACK hooked...` → `OneActivity`; `logcat -b crash` vazio.
+
+**Equalizador: activity existe, mas está quebrada no engine 7.0.0 — link escondido.** O
+manifest declara `com.apple.android.music.equalizer.EQActivity` **sem `android:theme`**;
+ela herda o tema de splash e morre em `BaseActivity.setContentView` ("You need to use a
+Theme.AppCompat theme"). Aplicando o tema AppCompat em `onActivityPreCreated` (setTheme +
+`Theme.setTo`) o crash seguinte é `EQActivityFragment.onCreateView` →
+`NullPointerException` (o fragmento/layout de EQ do engine está inutilizável nesta build;
+o `DefaultEqualizerConfig` e o fragmento são legado). Como o crash é no **mesmo processo**,
+não dá para abrir "só um pouco": o atalho **Equalizador** não é mostrado, e a preferência
+de equalizador do engine fica na própria tela de **Ajustes do Apple Music**
+(`settings_preference.xml`, chave `equalizer`; não exercitada nesta rodada). Nada de
+`EQActivity` foi alterado no build. O painel **Conta** passou a ser rolável (o conteúdo já
+não cabia nos ~360 dp do celular girado): no landscape o link **Ajustes do Apple Music** e o
+**Fechar** ficam alcançáveis por rolagem (`wave3a-account-landscape-scrolled.png`), e o
+portrait continua com tudo visível.
+
 ### Rotação e estado (1.9.7)
 
 O manifest do engine não declara `configChanges`, então girar (ou mudar `wm size`)
@@ -812,6 +866,15 @@ TV x86: `wave2d-before/after-library-tv.png`, `wave2d-before/after-collection-tv
 `wave2d-before/after-detail-tv.png`, `wave2d-after-account-tv.png`,
 `wave2d-account-manage-tv.png`, `wave2d-account-back-tv.png`.
 
+Onda 3a (1.9.13, letras/Ajustes): `wave3a-account-phone.png` (painel com o link **Ajustes do
+Apple Music**), `wave3a-account-landscape.png` / `wave3a-account-landscape-scrolled.png`
+(painel rolável no landscape, com o link alcançável), `wave3a-settings-phone.png` (tela
+Ajustes do engine), `wave3a-settings-back-phone.png` (um BACK de volta),
+`wave3a-account-tv.png`, `wave3a-settings-tv.png`, `wave3a-settings-back-tv.png` (mesmo
+fluxo na TV x86), `wave3a-settings-logcat.txt` (`engine settings opened`/BACK nos dois
+devices) e `wave3a-lyrics-probe.txt` (HTTP 404 do endpoint de letras, com a faixa que
+declara letra).
+
 ## Validado
 
 | Device | Resultado |
@@ -843,6 +906,8 @@ TV x86: `wave2d-before/after-library-tv.png`, `wave2d-before/after-collection-tv
 | `emulator-5554` (TV x86, 1.9.11, busca/biblioteca) | x86 instalado por cima. Biblioteca com 12/18/93/281 e pills **A–Z/Recentes**; Busca → escopo **Biblioteca** `angra` = 3 resultados (1 artista + 2 álbuns) **sem** `amp-api HTTP` (`wave2c-tv-04`); `wm size 1080x1920` com a busca aberta preservou escopo/termo/resultados (`wave2c-tv-05`); `logcat -b crash` vazio. |
 | `RXCX100BZ5J` (arm64, 1.9.12, refactor/testes/conta) | Instalado por cima (`versionName=1.9.12`, `versionCode=10912`). **Refactor**: Biblioteca, “Ver tudo” e detalhe da playlist `Backstreet Boys: essenciais` idênticos ao build 1.9.11 (`wave2d-before-*` / `wave2d-after-*`); a resolução continua `/br/search?types=playlists` → `/br/playlists/pl.331a…`. **Testes**: `UpdateAbisTest: OK (16)`, `CatalogResolverTest: OK (24)`, `CatalogSearchTest: OK (46)`. **Conta**: **Gerenciar assinatura** e **Conta Apple** abrem a tela Account oficial (deep link + componente); **um** BACK volta ao painel (`account BACK hooked on the engine back dispatcher` → `account screen BACK, returning to the UI`); `logcat -b crash` vazio. |
 | `emulator-5554` (TV x86, 1.9.12, refactor/conta) | x86 instalado por cima. Biblioteca/“Ver tudo”/detalhe iguais (`wave2d-before/after-library|collection|detail-tv.png`); **Gerenciar assinatura** abre a tela Account do engine e **um** BACK volta ao painel (`wave2d-account-manage-tv.png`, `wave2d-account-back-tv.png`); `logcat -b crash` vazio. |
+| `RXCX100BZ5J` (arm64, 1.9.13, Ajustes + letras) | Instalado por cima (`versionName=1.9.13`, `versionCode=10913`). Painel Conta mostra **Ajustes do Apple Music** (e **não** mostra Equalizador); toque → `engine settings opened id=0x7f0a008c` → tela **Ajustes** do engine (BIBLIOTECA, ÁUDIO); **um** BACK → `account BACK hooked on the engine back dispatcher` / `account screen BACK, returning to the UI` → `OneActivity`; `logcat -b crash` vazio. Letras: `/br/songs/1411628233` responde 200 com `hasLyrics=true`, mas `/lyrics` (e variantes) responde **404**; sem UI de letra (`wave3a-lyrics-probe.txt`). |
+| `emulator-5554` (TV x86, 1.9.13, Ajustes) | x86 instalado por cima (`1.9.13`). Conta → **Ajustes do Apple Music** → tela Ajustes do engine (`engine settings opened id=0x7f0a008c`); **um** BACK volta à `OneActivity`; `logcat -b crash` vazio. |
 
 Evidências lado a lado com as referências dos companions
 (`.pipeline/revamp-tv/`, `.pipeline/revamp-car/` e as fotos de celular em
@@ -1013,6 +1078,18 @@ e `library-20-tv-artist-detail.png`, `library-23-tv-library-album-detail.png` e
   cai no fallback de `OnBackInvokedDispatcher` (API 33+) e o BACK pode voltar para a home do
   engine. Medido em API 34 (TV) e API 36 (celular); **API 29 não exercitada**. Sign out
   continua ausente por decisão de segurança.
+- **Letras (endpoint da amp-api)**: `GET /v1/catalog/{sf}/songs/{id}/lyrics` devolveu
+  **HTTP 404 "No related resources found for lyrics"** para uma faixa com
+  `hasLyrics=true` e `hasTimeSyncedLyrics=true`, com o developer token da UI; as variantes
+  (`extend=ttmlLocalizations`, sem `l`, storefront `us`) também deram 404. Nenhuma UI de
+  letra foi adicionada; o caminho interno de TTML do engine (ou um token que exponha a
+  relação) não foi investigado a fundo — UNVERIFIED.
+- **Equalizador**: a `EQActivity` declarada no manifest não abre (sem tema AppCompat e,
+  depois do override, `EQActivityFragment.onCreateView` lança `NullPointerException`); o
+  atalho é escondido para não derrubar o app. A preferência de equalizador do engine fica
+  na tela **Ajustes do Apple Music** (`settings_preference.xml`), não exercitada nesta
+  rodada. Uma UI de EQ própria exigiria falar com o renderer/`DefaultEqualizerConfig`,
+  fora do escopo; **API 29 não exercitada**.
 - **Foco inicial no emulador TV**: o emulador se anuncia como touchscreen; a UI detecta
   `leanback`/`uiMode` television e usa o caminho D-pad. Em devices sem essa flag o foco
   pode cair no modo toque.

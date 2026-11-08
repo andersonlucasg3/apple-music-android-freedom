@@ -2,6 +2,7 @@ package com.anderson.applemusic.one;
 
 import android.app.Activity;
 import android.app.Application;
+import android.content.Context;
 import android.content.Intent;
 import android.content.pm.PackageInstaller;
 import android.content.pm.PackageManager;
@@ -71,6 +72,9 @@ public final class OneActivity extends Activity
     /** Validated engine deep link: ACTION_VIEW + MainActivity opens its Account screen. */
     private static final String ACCOUNT_SUMMARY_URL =
             "https://itunes.apple.com/accountSummary";
+    /** R8-renamed navigation helper used by the engine to reach its settings fragment. */
+    private static final String SETTINGS_NAV_CLASS = "M9.p";
+    private static final String SETTINGS_DESTINATION = "action_settings";
     /** Time for the host activity to build its window/ComposeView before we drive it. */
     private static final long SIGN_IN_SETTLE_MS = 400L;
     /** How often the sign-in sheet state is checked while the engine host is on top. */
@@ -1489,6 +1493,120 @@ public final class OneActivity extends Activity
             clearAccountWatcher(app);
             Log.w(TAG, "account deep link unavailable, opening the engine home", t);
             openEngine();
+        }
+    }
+
+    // --- engine settings ----------------------------------------------------------
+
+    @Override
+    public boolean engineSettingsAvailable() {
+        return engineSettingsId() != 0
+                && hasEngineClass(SETTINGS_NAV_CLASS)
+                && hasEngineClass(MediaClient.ACCOUNT_ACTIVITY);
+    }
+
+    /**
+     * The engine has no settings activity: {@code SettingsFragment} is a navigation
+     * destination inside {@code MainActivity}, reached through its R8-renamed helper
+     * {@code M9.p.a(Context, R.id.action_settings)}. Start the engine activity, wait for
+     * its NavHost, navigate, and leave BACK finishing the engine so the user lands here.
+     */
+    @Override
+    public void openEngineSettings() {
+        final Application app = getApplication();
+        clearAccountWatcher(app);
+        final ActivityWatcher watcher = new ActivityWatcher(MediaClient.ACCOUNT_ACTIVITY) {
+            @Override
+            void onTarget(final Activity activity) {
+                clearAccountWatcher(app);
+                main.postDelayed(new Runnable() {
+                    @Override
+                    public void run() {
+                        navigateToEngineSettings(activity, engineSettingsId(), 0);
+                    }
+                }, 700L);
+            }
+        };
+        accountWatcher = watcher;
+        app.registerActivityLifecycleCallbacks(watcher);
+        accountWatcherTimeout = new Runnable() {
+            @Override
+            public void run() {
+                Log.w(TAG, "the engine settings host did not come up");
+                clearAccountWatcher(app);
+                setStatus("Não foi possível abrir os Ajustes do Apple Music");
+            }
+        };
+        main.postDelayed(accountWatcherTimeout, 5000L);
+        try {
+            Intent intent = new Intent();
+            intent.setClassName(MediaClient.PACKAGE, MediaClient.ACCOUNT_ACTIVITY);
+            startActivity(intent);
+        } catch (Throwable t) {
+            clearAccountWatcher(app);
+            Log.e(TAG, "cannot open the engine settings host", t);
+            setStatus("Não foi possível abrir os Ajustes do Apple Music");
+        }
+    }
+
+    private int engineSettingsId() {
+        try {
+            return getResources().getIdentifier(SETTINGS_DESTINATION, "id", MediaClient.PACKAGE);
+        } catch (Throwable t) {
+            return 0;
+        }
+    }
+
+    private static boolean hasEngineClass(String name) {
+        try {
+            Class.forName(name, false, OneActivity.class.getClassLoader());
+            return true;
+        } catch (Throwable t) {
+            return false;
+        }
+    }
+
+    /**
+     * Waits for the engine's NavHost (it is added after the host activity resumes) before
+     * calling the navigation helper; the helper throws when the host is not ready, so a
+     * bounded retry runs instead of showing the engine home.
+     */
+    private void navigateToEngineSettings(final Activity host, final int id, final int attempt) {
+        if (host.isFinishing() || host.isDestroyed()) return;
+        if (attempt > 20) {
+            Log.w(TAG, "cannot navigate to the engine settings after " + attempt + " tries");
+            setStatus("Não foi possível abrir os Ajustes do Apple Music");
+            host.finish();
+            return;
+        }
+        boolean retry;
+        try {
+            Class<?> nav = Class.forName(SETTINGS_NAV_CLASS);
+            Object navHost = nav.getMethod("g", Context.class).invoke(null, host);
+            if (navHost == null) {
+                retry = true;
+            } else {
+                nav.getMethod("a", Context.class, int.class).invoke(null, host, id);
+                Log.i(TAG, "engine settings opened id=0x" + Integer.toHexString(id));
+                main.postDelayed(new Runnable() {
+                    @Override
+                    public void run() {
+                        interceptAccountBack(host);
+                    }
+                }, 1000L);
+                retry = false;
+            }
+        } catch (Throwable t) {
+            Log.w(TAG, "engine settings navigation attempt " + attempt + ": " + t);
+            retry = true;
+        }
+        if (retry) {
+            main.postDelayed(new Runnable() {
+                @Override
+                public void run() {
+                    navigateToEngineSettings(host, id, attempt + 1);
+                }
+            }, 250L);
         }
     }
 
