@@ -22,7 +22,6 @@ import java.io.OutputStream;
 import java.net.HttpURLConnection;
 import java.net.URL;
 import java.security.MessageDigest;
-import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 import java.util.concurrent.ExecutorService;
@@ -218,9 +217,10 @@ public final class UpdateManager {
             Update update = parse(root);
             prefs.edit().putLong(KEY_LAST_CHECK, System.currentTimeMillis()).apply();
             if (update == null) {
-                Log.i(TAG, "updates.json: sem one-* mais novo para " + Build.SUPPORTED_ABIS[0]
-                        + " (instalada " + installed() + ")");
-                postState(new State(NONE, "Sem atualização. Instalada: " + installed(), -1, null));
+                Log.i(TAG, "updates.json: sem atualização para esta ABI ("
+                        + Build.SUPPORTED_ABIS[0] + ", instalada " + installed() + ")");
+                postState(new State(NONE,
+                        "Sem atualização para esta ABI. Instalada: " + installed(), -1, null));
             } else {
                 Log.i(TAG, "updates.json: " + update.key + " " + update.version + " ("
                         + update.versionCode + ") disponível");
@@ -237,8 +237,9 @@ public final class UpdateManager {
     }
 
     /**
-     * Picks the most specific {@code one-<abi>} asset. {@link Build#SUPPORTED_ABIS} order
-     * wins; when that key is absent, the fallback is the first published one-* entry.
+     * Picks the asset for the device's <b>primary</b> ABI only. If that key is absent from
+     * {@code updates.json}, there is no update for this installation: falling back to
+     * another ABI would offer an APK the device cannot run.
      */
     private Update parse(JSONObject root) throws IOException {
         JSONObject assets = root.optJSONObject("assets");
@@ -262,23 +263,7 @@ public final class UpdateManager {
     }
 
     private static List<String> candidateKeys() {
-        List<String> keys = new ArrayList<String>();
-        for (String abi : Build.SUPPORTED_ABIS) {
-            String key = keyForAbi(abi);
-            if (key != null && !keys.contains(key)) keys.add(key);
-        }
-        // Fallback: first one-* asset published (arm64, arm32, x86).
-        for (String key : new String[]{"one-arm64", "one-arm32", "one-x86"}) {
-            if (!keys.contains(key)) keys.add(key);
-        }
-        return keys;
-    }
-
-    private static String keyForAbi(String abi) {
-        if ("arm64-v8a".equals(abi)) return "one-arm64";
-        if ("armeabi-v7a".equals(abi) || "armeabi".equals(abi)) return "one-arm32";
-        if ("x86".equals(abi) || "x86_64".equals(abi)) return "one-x86";
-        return null;
+        return UpdateAbis.candidateKeys(Build.SUPPORTED_ABIS);
     }
 
     private static String defaultName(String key) {

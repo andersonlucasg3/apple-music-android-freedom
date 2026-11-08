@@ -160,6 +160,7 @@ public final class LibraryScreen implements ChildSink {
 
         input = new EditText(context);
         input.setHint("Filtrar artistas, álbuns e playlists");
+        input.setContentDescription("Filtrar a biblioteca");
         input.setTextColor(Tokens.TEXT);
         input.setSingleLine(true);
         input.setBackground(null);
@@ -185,6 +186,7 @@ public final class LibraryScreen implements ChildSink {
                 ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
 
         clear = new CircleButton(context, Icons.CLOSE, 36f, 0x00000000, Tokens.TEXT_DIM, 16f);
+        clear.setContentDescription("Limpar filtro");
         clear.setVisibility(View.GONE);
         clear.setOnClickListener(new View.OnClickListener() {
             @Override
@@ -493,6 +495,7 @@ public final class LibraryScreen implements ChildSink {
         if (item.artworkUri != null && item.artworkUri.length() > 0) {
             ImageView cover = new ImageView(context);
             cover.setScaleType(ImageView.ScaleType.CENTER_CROP);
+            cover.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
             avatar.addView(cover, new FrameLayout.LayoutParams(
                     ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
             artwork.load(item.artworkUri, cover);
@@ -520,6 +523,7 @@ public final class LibraryScreen implements ChildSink {
         Focus.attach(card, Tokens.RADIUS_CARD, Tokens.SURFACE, Tokens.SURFACE_HOVER, null);
         Focus.rippleOnTop(card, Tokens.RADIUS_CARD);
         card.setLayoutParams(new LinearLayout.LayoutParams(size, size));
+        card.setContentDescription(item.title + ", artista");
         card.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {

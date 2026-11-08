@@ -126,6 +126,7 @@ public class CollectionScreen implements ChildSink {
 
         back = new CircleButton(context, Icons.CHEVRON_LEFT, 44f, Tokens.SURFACE,
                 Tokens.TEXT, 22f);
+        back.setContentDescription("Voltar");
         LinearLayout.LayoutParams backParams =
                 new LinearLayout.LayoutParams(Tokens.dp(44), Tokens.dp(44));
         backParams.rightMargin = Tokens.dp(14);

@@ -74,7 +74,13 @@ public final class SearchScreen {
         root = new FrameLayout(context);
         root.setBackgroundColor(Tokens.BG);
         root.setVisibility(View.GONE);
-        root.setClickable(true);
+        // Consume touches that miss the field/results so they do not reach the screen below.
+        root.setOnTouchListener(new View.OnTouchListener() {
+            @Override
+            public boolean onTouch(View v, android.view.MotionEvent event) {
+                return true;
+            }
+        });
 
         LinearLayout page = new LinearLayout(context);
         page.setOrientation(LinearLayout.VERTICAL);
@@ -87,6 +93,7 @@ public final class SearchScreen {
         header.setGravity(Gravity.CENTER_VERTICAL);
         CircleButton close = new CircleButton(context, Icons.CLOSE, 44f, Tokens.SURFACE,
                 Tokens.TEXT, 20f);
+        close.setContentDescription("Fechar busca");
         close.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {
@@ -116,6 +123,7 @@ public final class SearchScreen {
 
         input = new EditText(context);
         input.setHint("Músicas, álbuns, artistas");
+        input.setContentDescription("Buscar no Apple Music");
         input.setHintTextColor(Tokens.TEXT_DIM);
         input.setTextColor(Tokens.TEXT);
         input.setTextSize(16f);
@@ -143,6 +151,7 @@ public final class SearchScreen {
 
         CircleButton clear = new CircleButton(context, Icons.CLOSE, 36f, 0x00000000,
                 Tokens.TEXT_DIM, 16f);
+        clear.setContentDescription("Limpar busca");
         clear.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {

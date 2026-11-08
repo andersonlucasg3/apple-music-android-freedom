@@ -39,6 +39,7 @@ public final class AccountScreen {
         root.setBackgroundColor(0xD9000000);
         root.setVisibility(View.GONE);
         root.setClickable(true);
+        root.setContentDescription("Fechar");
         root.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {
@@ -51,7 +52,13 @@ public final class AccountScreen {
         panel.setGravity(Gravity.CENTER_HORIZONTAL);
         panel.setPadding(Tokens.dp(24), Tokens.dp(26), Tokens.dp(24), Tokens.dp(20));
         panel.setBackground(Shapes.rounded(Tokens.SURFACE, Tokens.RADIUS_SHEET));
-        panel.setClickable(true);
+        // Consume taps inside the panel without adding a clickable a11y node.
+        panel.setOnTouchListener(new View.OnTouchListener() {
+            @Override
+            public boolean onTouch(View v, android.view.MotionEvent event) {
+                return true;
+            }
+        });
         Shapes.clip(panel, Tokens.RADIUS_SHEET);
 
         int width = Math.min(Tokens.dp(460), Math.round(Tokens.screenWidth() * 0.88f));

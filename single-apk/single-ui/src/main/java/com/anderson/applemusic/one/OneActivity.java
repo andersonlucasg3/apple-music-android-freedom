@@ -235,6 +235,7 @@ public final class OneActivity extends Activity
                         state.getBoolean(KEY_ACTIONS_PLAYABLE, false));
             }
         }
+        refreshAccessibility();
     }
 
     /**
@@ -340,6 +341,7 @@ public final class OneActivity extends Activity
             @Override
             public void onAccount() {
                 accountScreen.open();
+                refreshAccessibility();
             }
 
             @Override
@@ -428,7 +430,36 @@ public final class OneActivity extends Activity
 
         setContentView(rootFrame);
         registerBackHandler();
+        refreshAccessibility();
         main.postDelayed(ticker, TICK_MS);
+    }
+
+    /**
+     * Keeps only the active layer in the accessibility tree. Every visible overlay makes
+     * the layers underneath {@code IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS}, so
+     * TalkBack and {@code uiautomator} do not walk into covered screens (the player used
+     * to expose the whole Início tree behind it). The mini player floats above the
+     * collection/search/detail overlays but is covered by the player and the sheets.
+     */
+    private void refreshAccessibility() {
+        View[] layers = {collectionHost, searchScreen.view(), detailHost,
+                playerScreen.view(), actionSheet, updatesScreen.view(), accountScreen.view()};
+        int active = -1;
+        for (int i = 0; i < layers.length; i++) {
+            if (layers[i] != null && layers[i].getVisibility() == View.VISIBLE) active = i;
+        }
+        for (int i = 0; i < layers.length; i++) {
+            if (layers[i] == null) continue;
+            layers[i].setImportantForAccessibility(i < active
+                    ? View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS
+                    : View.IMPORTANT_FOR_ACCESSIBILITY_AUTO);
+        }
+        base.setImportantForAccessibility(active < 0
+                ? View.IMPORTANT_FOR_ACCESSIBILITY_AUTO
+                : View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS);
+        miniPlayer.setImportantForAccessibility(active < 3
+                ? View.IMPORTANT_FOR_ACCESSIBILITY_AUTO
+                : View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS);
     }
 
     private static View firstFocusable(View root) {
@@ -584,6 +615,7 @@ public final class OneActivity extends Activity
                 + " player=" + saved.getBoolean(KEY_PLAYER, false)
                 + " queue=" + saved.getBoolean(KEY_QUEUE, false)
                 + " actions=" + saved.getBoolean(KEY_ACTIONS, false));
+        refreshAccessibility();
     }
 
     /**
@@ -793,12 +825,14 @@ public final class OneActivity extends Activity
     @Override
     public void openSearch() {
         searchScreen.open();
+        refreshAccessibility();
     }
 
     @Override
     public void openUpdates() {
         updatesScreen.open();
         updater.check();
+        refreshAccessibility();
     }
 
     @Override
@@ -810,6 +844,7 @@ public final class OneActivity extends Activity
         playerScreen.update(latest);
         playerScreen.view().setVisibility(View.VISIBLE);
         playerScreen.focus();
+        refreshAccessibility();
     }
 
     @Override
@@ -825,6 +860,7 @@ public final class OneActivity extends Activity
         collectionHost.setVisibility(View.VISIBLE);
         overlayCollection.bind(parentId, title);
         setStatus("");
+        refreshAccessibility();
     }
 
     @Override
@@ -841,6 +877,7 @@ public final class OneActivity extends Activity
         collectionHost.setVisibility(View.VISIBLE);
         overlayCollection.bindCollection(kind, title, subtitle, libraryId);
         setStatus("");
+        refreshAccessibility();
     }
 
     @Override
@@ -892,6 +929,7 @@ public final class OneActivity extends Activity
                 break;
         }
         setStatus("");
+        refreshAccessibility();
     }
 
     @Override
@@ -910,6 +948,7 @@ public final class OneActivity extends Activity
             detailHost.setVisibility(View.GONE);
         }
         setDetailFocus(false);
+        refreshAccessibility();
     }
 
     /**
@@ -977,30 +1016,35 @@ public final class OneActivity extends Activity
     @Override
     public void closePlayer() {
         playerScreen.close();
+        refreshAccessibility();
         if (!hasTouch) focusSelectedTab();
     }
 
     @Override
     public void closeSearch() {
         searchScreen.close();
+        refreshAccessibility();
         if (!hasTouch) focusSelectedTab();
     }
 
     @Override
     public void closeActions() {
         actionSheet.hide();
+        refreshAccessibility();
         if (!hasTouch) focusSelectedTab();
     }
 
     @Override
     public void closeUpdates() {
         updatesScreen.close();
+        refreshAccessibility();
         if (!hasTouch) focusSelectedTab();
     }
 
     @Override
     public void closeAccount() {
         accountScreen.close();
+        refreshAccessibility();
         if (!hasTouch) focusSelectedTab();
     }
 
@@ -1017,6 +1061,7 @@ public final class OneActivity extends Activity
         }
         collectionHost.removeAllViews();
         collectionHost.setVisibility(View.GONE);
+        refreshAccessibility();
     }
 
     @Override
@@ -1058,6 +1103,7 @@ public final class OneActivity extends Activity
         if (visible != miniVisible) {
             miniVisible = visible;
             base.setPadding(0, 0, 0, visible ? Tokens.dp(84) : 0);
+            refreshAccessibility();
         }
         if (playerScreen.view().getVisibility() == View.VISIBLE) {
             playerScreen.update(snapshot);
@@ -1107,6 +1153,7 @@ public final class OneActivity extends Activity
                 closeActions();
             }
         });
+        refreshAccessibility();
     }
 
     private void runItemAction(final MediaClient.Item item, final MediaClient.Action action) {

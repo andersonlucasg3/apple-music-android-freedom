@@ -65,6 +65,8 @@ public final class TrackRow extends LinearLayout {
         Focus.attach(this, Tokens.RADIUS_CONTROL, 0x00000000, Tokens.SURFACE_HOVER, null);
         setLayoutParams(new LinearLayout.LayoutParams(
                 LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT));
+        setContentDescription(position + ". " + title
+                + (subtitle == null || subtitle.length() == 0 ? "" : ", " + subtitle));
     }
 
     /** Marks the track the session is playing: accent glyph and title, number hidden. */

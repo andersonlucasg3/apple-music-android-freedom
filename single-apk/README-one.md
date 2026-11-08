@@ -83,8 +83,8 @@ Tokens espelhados dos companions Compose (`tv-app/TvTheme.kt`, `car-app/Theme.kt
 ## Build
 
 ```powershell
-./single-apk/build-one-apk.ps1 -PoneVersion 1.9.0          # versionCode 10900 derivado
-./single-apk/build-one-apk.ps1 -Abi arm64,arm32 -PoneVersion 1.9.0
+./single-apk/build-one-apk.ps1 -PoneVersion 1.9.8          # versionCode 10908 derivado
+./single-apk/build-one-apk.ps1 -Abi arm64,arm32 -PoneVersion 1.9.8
 ```
 
 O build compila a UI uma vez e gera, para cada ABI:
@@ -290,7 +290,7 @@ Com targetSdk 36 o *predictive back* vem ligado: o sistema deixa de chamar
 - **Conta**: com sessão ativa, mostra o **perfil** do engine (avatar com a inicial,
   nome, Apple ID e assinatura); sem sessão, mostra o convite e o botão oficial de login
   do Apple ID (fluxo acima). O estado é relido a cada abertura do painel.
-- **Atualizações**: painel com versão instalada (`1.9.0 (10900)`), versão do engine,
+- **Atualizações**: painel com versão instalada (`1.9.8 (10908)`), versão do engine,
   mensagem de estado, progresso, Verificar / Baixar e instalar / Cancelar / Fechar.
   Compara `one-<abi>.versionCode`, baixa, confere SHA-256 e instala via `PackageInstaller`.
 - **Estados**: vazio, erro e sem conexão com ícone e texto (`EmptyState`) em Início,
@@ -514,6 +514,58 @@ Detalhes de implementação:
   o scroll do filtro é reconstruído junto com os resultados e pode voltar ao topo enquanto
   as categorias chegam.
 
+### Acessibilidade (1.9.8)
+
+Todo nó clicável passou a ter rótulo próprio: `CoverCard`/`SeeAllCard` levam
+`contentDescription` com título/subtítulo ou “Ver tudo, N itens”, `ListRow` e `TrackRow`
+exibem título/artista (a faixa também o número), e `Pill`/`TabView` herdam o texto visível.
+Os `CircleButton` sem texto ganharam descrição explícita (“Fechar player”, “Faixa anterior”,
+“Reproduzir”/“Pausar”, “Próxima faixa”, “Fechar busca”, “Limpar busca/filtro”, “Voltar”,
+“Fechar”). `IconView` (todos os glifos desenhados) e as capas (`ImageView`) são decorativos
+(`importantForAccessibility=NO`).
+
+Os overlays são **camadas de acessibilidade**: `OneActivity.refreshAccessibility()` marca com
+`IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS` tudo o que está abaixo da camada ativa
+(Início/abas, coleção, busca, detalhe, mini player, player, sheet de ações, atualizações,
+conta) e devolve `AUTO` ao fechar — inclusive quando a folha fecha pelo “Fechar” ou por toque
+fora (`ActionSheet.dismiss()` avisa o host). A fila “A seguir” esconde a página do player, e
+os painéis (ações, conta, atualizações) consomem o toque com `OnTouchListener` em vez de
+serem `clickable` sem rótulo.
+
+Verificação com `uiautomator dump --compressed`, que é a árvore de acessibilidade (o dump sem
+`--compressed` inclui views não importantes por design do UiAutomator):
+
+| Tela | Nós | Cliques sem rótulo | Camada de baixo exposta |
+|---|---|---|---|
+| Player (celular) | 21–22 | 0 | não |
+| Sheet Ações (celular) | 14 | 0 | não |
+| Fila “A seguir” (celular) | 34–35 | 0 | não |
+| Player (TV x86) | 21–22 | 0 | não |
+| Sheet Ações (TV x86) | 14 | 0 | não |
+| Início / Biblioteca / Busca / Detalhe / Coleção / Rádio | 27–44 | 0 | — (cada um só com o mini player acima) |
+| Atualizações | 15 | 0 | não |
+
+Dumps e screenshots em [`evidence/wave1c-*`](evidence) (`wave1c-player.xml`,
+`wave1c-actions.xml`, `wave1c-queue.xml`, `wave1c-tv-*`, `wave1c-*-compressed.xml`).
+
+### Updater: ABI estrita (1.9.8)
+
+`UpdateAbis` (classe Java pura, sem `android.*`) mapeia a **ABI primária**
+(`Build.SUPPORTED_ABIS[0]`): `arm64-v8a` → `one-arm64`, `armeabi-v7a`/`armeabi` →
+`one-arm32`, `x86`/`x86_64` → `one-x86`. Se a chave não existir no `updates.json`, o painel
+mostra **“Sem atualização para esta ABI. Instalada: …”**. O fallback antigo para
+`one-arm32`/`one-x86` foi removido: num arm64 sem suporte a 32-bit ele oferecia o APK errado.
+
+Teste JVM do mapeamento (fora do APK, sem dependências):
+
+```powershell
+./single-apk/test-update-abis.ps1
+# UpdateAbisTest: OK (16 checks)
+```
+
+Medido no celular: `updates.json: sem atualização para esta ABI (arm64-v8a, instalada
+1.9.8 (10908))`.
+
 ## Validado
 
 | Device | Resultado |
@@ -535,6 +587,8 @@ Detalhes de implementação:
 | `emulator-5554` (TV x86, 1.9.6, player/D-pad) | Instalado por cima. Player lado a lado com os três toggles na linha do cabeçalho; D-pad: UP (play → ‹), RIGHT (‹ → aleatório), ENTER = `sendCustomAction ...SHUFFLE` + “Aleatório alternado”; `logcat -b crash` vazio. |
 | `RXCX100BZ5J` (arm64, 1.9.7, rotação) | Instalado por cima. **Início** rolado até “MPB: joias ocultas”, girado 2× (`user_rotation 1` → `0`): volta na mesma aba e na mesma posição (`wave1b-02/03/04`). **Biblioteca** com filtro `backstreet` (1 resultado) girada para landscape: aba `tab=2 (restored)` e filtro/resultado preservados (`wave1b-06/07/08`). **Álbum** `A Capella - Single` → link **Ylvis** (profundidade 2) girado 2×: breadcrumb `A Capella - Single › Ylvis` intacto e BACK voltando álbum → Biblioteca (`wave1b-13/14/15/16/17`). **Player** com “A seguir” aberto girado: `queue sheet restored (34 tracks)` e sheet de volta em landscape (`wave1b-24/33`). **Ver tudo** (`Mais relevantes pra você`, 9 itens) girado: `collection=true`, lista e breadcrumb de volta (`wave1b-26/27/28`). **Busca** `daft` (18 resultados) girada: painel reaberto com o termo e **um** `amp-api HTTP 200 /br/search?term=daft…` (`wave1b-29/30/31`). `logcat -b crash` vazio. |
 | `emulator-5554` (TV x86, 1.9.7, `wm size`) | Instalado por cima. Rotação simulada com `wm size 1080x1920` / `1920x1080` / `reset`: **Início** `tab=0 (restored)` com as prateleiras e o foco do D-pad (`wave1b-tv-01/02`); **player** aberto na janela “retrato” e voltando lado a lado no landscape com a posição seguindo (0:10 → 0:28, `wave1b-tv-03/04`); **Biblioteca** com filtro `backstreet` (1 resultado) e `wm size` para “retrato”: `tab=2 (restored)` e `backstreet`/`Backstreet Boys Essentials` preservados (`wave1b-tv-05/06`); `logcat -b crash` vazio. |
+| `RXCX100BZ5J` (arm64, 1.9.8, a11y/updater) | Instalado por cima. Player aberto e pausado: `uiautomator dump --compressed` com **22 nós / 10 clicáveis, 0 sem rótulo** e nenhum nó da tela de baixo; **Ações** com **14/5, 0 sem rótulo** e nenhum controle do player; **Fila** 35/9, 0 sem rótulo e página do player fora da árvore; girado em landscape com a fila aberta: `queue sheet restored (35 tracks)` e a árvore continuou só com a fila; Início/Biblioteca/Busca/Detalhe/Coleção/Rádio com 0 clicáveis sem rótulo; **Atualizações** mostra “Sem atualização para esta ABI. Instalada: 1.9.8 (10908)” e o log `updates.json: sem atualização para esta ABI (arm64-v8a, instalada 1.9.8 (10908))`; `logcat -b crash` vazio. |
+| `emulator-5554` (TV x86, 1.9.8, a11y) | Instalado por cima. Player e **Ações** com **22/10** e **14/5** nós/clicáveis, **0 sem rótulo** e nenhuma camada de baixo exposta; Início com 14 clicáveis, todos rotulados; `logcat -b crash` vazio. |
 
 Evidências lado a lado com as referências dos companions
 (`.pipeline/revamp-tv/`, `.pipeline/revamp-car/` e as fotos de celular em
@@ -583,6 +637,15 @@ girados), `wave1b-26/27/28` (overlay “Ver tudo”), `wave1b-29/30/31` (busca `
 `wave1b-tv-01` … `wave1b-tv-07` (mesmos estados no emulador TV com `wm size`) e
 `wave1b-restore-logcat.txt` (`root arrived, tab=N (restored)`, `overlays restored`,
 `queue sheet restored`).
+
+Onda 1c (1.9.8, a11y/updater): `wave1c-player.png` / `wave1c-player.xml` (player com os 21
+nós e 10 clicáveis rotulados), `wave1c-actions.png` / `wave1c-actions.xml` (sheet só com a
+camada ativa), `wave1c-queue.xml` (fila esconde a página do player), `wave1c-player-land.xml`
+(fila girada), `wave1c-home.xml`, `wave1c-library.xml`, `wave1c-search.xml`,
+`wave1c-detail.xml`, `wave1c-collection.xml`, `wave1c-radio.xml`, `wave1c-updates.xml`
+(“Sem atualização para esta ABI”), `wave1c-account.xml` (dump **sem** `--compressed`, que
+ainda mostra a tela de baixo) e `wave1c-account-compressed.xml` (árvore de acessibilidade só
+com a conta) e `wave1c-tv-*` (player, ações e Início no emulador x86).
 
 Fila (1.9.2): `queue-02-player.png` e `queue-11-tv-player.png` (pill **Fila** no celular
 e na TV), `queue-03-panel.png` e `queue-12-tv-panel.png` (“A seguir” com a faixa atual em
@@ -658,7 +721,13 @@ e `library-20-tv-artist-detail.png`, `library-23-tv-library-album-detail.png` e
 - **Updater**: o caminho de download + SHA-256 + `PackageInstaller` continua não
   exercitado ponta a ponta (não há release com `one-*`); o caminho “sem atualização”
   (parsing do `updates.json` real) foi validado nos dois devices, agora mostrando
-  `1.9.0 (10900)`.
+  `Sem atualização para esta ABI` na 1.9.8. A seleção de asset é só pela **ABI primária**
+  (teste JVM em `single-apk/test-update-abis.ps1`); `one-arm32`/`one-x86` não são mais
+  oferecidos como fallback.
+- **Acessibilidade medida por dump**: `uiautomator dump` sem `--compressed` lista também
+  views que não são importantes para acessibilidade (comportamento do UiAutomator), então a
+  verificação de “só a camada ativa” usa `uiautomator dump --compressed`; o TalkBack em si
+  não foi ligado nesta rodada (avaliação estática da árvore).
 - **“Tocar tudo” no artista não existe**: a amp-api devolve álbuns e músicas principais,
   mas não uma coleção tocável, e o engine não monta fila para id de artista (testado com
   `playFromMediaId(192030844)` e `ra.192030844`: sessão continua `state=NONE`). O artista

@@ -56,6 +56,7 @@ public final class NowPlayingScreen {
     private final Context context;
     private final ScreenHost host;
     private final FrameLayout root;
+    private final LinearLayout page;
     private final ImageView cover;
     private final TextView title;
     private final TextView artist;
@@ -103,9 +104,17 @@ public final class NowPlayingScreen {
         root = new FrameLayout(context);
         root.setBackgroundColor(Tokens.BG_PLAYER);
         root.setVisibility(View.GONE);
-        root.setClickable(true);
+        // The player covers the whole window: consume touches that miss the controls so
+        // they cannot fall through to the mini player/screens below (without adding a
+        // clickable node that would need an accessibility label).
+        root.setOnTouchListener(new View.OnTouchListener() {
+            @Override
+            public boolean onTouch(View v, android.view.MotionEvent event) {
+                return true;
+            }
+        });
 
-        LinearLayout page = new LinearLayout(context);
+        page = new LinearLayout(context);
         page.setOrientation(LinearLayout.VERTICAL);
         page.setPadding(Tokens.dp(24), Tokens.dp(18), Tokens.dp(24), Tokens.dp(22));
 
@@ -115,6 +124,7 @@ public final class NowPlayingScreen {
         header.setGravity(Gravity.CENTER_VERTICAL);
         CircleButton close = new CircleButton(context, Icons.CHEVRON_LEFT, 44f,
                 Tokens.SURFACE, Tokens.TEXT, 22f);
+        close.setContentDescription("Fechar player");
         close.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {
@@ -143,6 +153,7 @@ public final class NowPlayingScreen {
         cover = new ImageView(context);
         cover.setScaleType(ImageView.ScaleType.CENTER_CROP);
         cover.setBackgroundColor(Tokens.SURFACE_HOVER);
+        cover.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
         Shapes.clip(cover, Tokens.RADIUS_CARD);
 
         title = Inter.text(context, "", Tokens.DISPLAY, Inter.BOLD, Tokens.TEXT);
@@ -157,6 +168,7 @@ public final class NowPlayingScreen {
 
         seek = new SeekBar(context);
         seek.setMax(1000);
+        seek.setContentDescription("Posição da faixa");
         seek.setProgressTintList(ColorStateList.valueOf(Tokens.ACCENT));
         seek.setProgressBackgroundTintList(ColorStateList.valueOf(Tokens.TRACK));
         seek.setThumbTintList(ColorStateList.valueOf(Tokens.ACCENT));
@@ -188,6 +200,7 @@ public final class NowPlayingScreen {
         duration.setMinWidth(Tokens.dp(44));
 
         play = new CircleButton(context, Icons.PLAY, 80f, Tokens.ACCENT, Tokens.TEXT, 30f);
+        play.setContentDescription("Reproduzir");
         play.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {
@@ -196,6 +209,7 @@ public final class NowPlayingScreen {
         });
         CircleButton previous = new CircleButton(context, Icons.PREV, 60f,
                 Tokens.SURFACE, Tokens.TEXT, 24f);
+        previous.setContentDescription("Faixa anterior");
         previous.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {
@@ -204,6 +218,7 @@ public final class NowPlayingScreen {
         });
         CircleButton next = new CircleButton(context, Icons.NEXT, 60f,
                 Tokens.SURFACE, Tokens.TEXT, 24f);
+        next.setContentDescription("Próxima faixa");
         next.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {
@@ -433,12 +448,18 @@ public final class NowPlayingScreen {
         FrameLayout panel = new FrameLayout(context);
         panel.setBackgroundColor(0xD9000000);
         panel.setClickable(true);
+        panel.setContentDescription("Fechar");
 
         LinearLayout sheet = new LinearLayout(context);
         sheet.setOrientation(LinearLayout.VERTICAL);
         sheet.setPadding(Tokens.dp(20), Tokens.dp(8), Tokens.dp(20), Tokens.dp(14));
         sheet.setBackground(Shapes.rounded(Tokens.SURFACE, Tokens.RADIUS_SHEET));
-        sheet.setClickable(true);
+        sheet.setOnTouchListener(new View.OnTouchListener() {
+            @Override
+            public boolean onTouch(View v, android.view.MotionEvent event) {
+                return true;
+            }
+        });
         Shapes.clip(sheet, Tokens.RADIUS_SHEET);
 
         View grabber = new View(context);
@@ -496,12 +517,6 @@ public final class NowPlayingScreen {
                 closeQueue();
             }
         });
-        sheet.setOnClickListener(new View.OnClickListener() {
-            @Override
-            public void onClick(View v) {
-                // Consume: taps inside the sheet must not close it.
-            }
-        });
         panel.setVisibility(View.GONE);
         return panel;
     }
@@ -509,6 +524,10 @@ public final class NowPlayingScreen {
     private void openQueue() {
         if (latest.queue.isEmpty()) return;
         refreshQueue(latest);
+        // The sheet owns the screen while it is open; the player underneath must leave the
+        // accessibility tree so TalkBack does not walk into covered controls.
+        page.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS);
+        queuePanel.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_AUTO);
         queuePanel.setVisibility(View.VISIBLE);
         queuePanel.setAlpha(0f);
         queuePanel.animate().alpha(1f).setDuration(140L).start();
@@ -519,6 +538,7 @@ public final class NowPlayingScreen {
 
     public void closeQueue() {
         queuePanel.setVisibility(View.GONE);
+        page.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_AUTO);
     }
 
     /** Reopens the "A seguir" sheet after a rotation; no-op when the session has no queue. */
@@ -684,6 +704,7 @@ public final class NowPlayingScreen {
         artist.setText(snapshot.artist);
         album.setText(snapshot.album);
         play.setIcon(snapshot.playing ? Icons.PAUSE : Icons.PLAY);
+        play.setContentDescription(snapshot.playing ? "Pausar" : "Reproduzir");
         station.setVisibility(snapshot.findActionEndingWith(STATION) != null
                 ? View.VISIBLE : View.GONE);
         queue.setVisibility(snapshot.queue.isEmpty() ? View.GONE : View.VISIBLE);

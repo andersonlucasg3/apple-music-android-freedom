@@ -118,6 +118,7 @@ public final class DetailScreen {
 
         back = new CircleButton(context, Icons.CHEVRON_LEFT, 44f, Tokens.SURFACE,
                 Tokens.TEXT, 22f);
+        back.setContentDescription("Voltar");
         LinearLayout.LayoutParams backParams =
                 new LinearLayout.LayoutParams(Tokens.dp(44), Tokens.dp(44));
         backParams.rightMargin = Tokens.dp(14);
@@ -690,6 +691,7 @@ public final class DetailScreen {
         ImageView cover = new ImageView(context);
         cover.setScaleType(ImageView.ScaleType.CENTER_CROP);
         cover.setBackgroundColor(Tokens.SURFACE_HOVER);
+        cover.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
         Shapes.clip(cover, Tokens.RADIUS_CARD);
         LinearLayout.LayoutParams coverParams = new LinearLayout.LayoutParams(size, size);
         coverParams.rightMargin = Tokens.dp(18);

@@ -34,6 +34,7 @@ public final class ListRow extends LinearLayout {
         cover = new ImageView(context);
         cover.setScaleType(ImageView.ScaleType.CENTER_CROP);
         cover.setBackgroundColor(Tokens.SURFACE_HOVER);
+        cover.setImportantForAccessibility(IMPORTANT_FOR_ACCESSIBILITY_NO);
         LinearLayout.LayoutParams coverParams =
                 new LinearLayout.LayoutParams(Tokens.dp(52), Tokens.dp(52));
         coverParams.rightMargin = Tokens.dp(14);
@@ -72,6 +73,8 @@ public final class ListRow extends LinearLayout {
         Focus.attach(this, Tokens.RADIUS_CONTROL, Tokens.SURFACE, Tokens.SURFACE_HOVER, null);
         setLayoutParams(new LinearLayout.LayoutParams(
                 LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT));
+        setContentDescription(subtitle == null || subtitle.length() == 0
+                ? title : title + ", " + subtitle);
     }
 
 

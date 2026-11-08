@@ -288,6 +288,7 @@ public final class HomeScreen implements ChildSink {
         heroCover = new ImageView(context);
         heroCover.setScaleType(ImageView.ScaleType.CENTER_CROP);
         heroCover.setBackgroundColor(Tokens.SURFACE_HOVER);
+        heroCover.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
         hero.addView(heroCover, new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
 
@@ -352,6 +353,7 @@ public final class HomeScreen implements ChildSink {
                 }
             }
         });
+        hero.setContentDescription("Destaque");
 
         return hero;
     }
@@ -360,6 +362,8 @@ public final class HomeScreen implements ChildSink {
         heroItem = item;
         heroTitle.setText(item.title);
         heroSubtitle.setText(item.subtitle.length() > 0 ? item.subtitle : "Apple Music");
+        hero.setContentDescription("Destaque: " + item.title
+                + (item.subtitle.length() > 0 ? ", " + item.subtitle : ""));
         artwork.load(item.artworkUri, heroCover);
     }
 
