@@ -4,6 +4,7 @@ import android.app.PendingIntent;
 import android.content.Context;
 import android.content.Intent;
 import android.content.SharedPreferences;
+import android.content.pm.PackageInfo;
 import android.content.pm.PackageInstaller;
 import android.os.Build;
 import android.os.Handler;
@@ -29,8 +30,9 @@ import java.util.concurrent.Executors;
 
 /**
  * Framework-only updater for the single APK: reads {@code updates.json} from the latest
- * GitHub release, compares {@code one-<abi>.versionCode} with {@link Version#CODE},
- * downloads the matching APK with progress, checks its SHA-256 and hands it to
+ * GitHub release, compares {@code one-<abi>.versionCode} with the <b>installed package's</b>
+ * versionCode (the manifest now carries the UI version, not the engine's 7.0.0), downloads
+ * the matching APK with progress, checks its SHA-256 and hands it to
  * {@link PackageInstaller}. The APK replaces this very package, so the signing cert
  * (and the account data) stay the same.
  *
@@ -244,11 +246,12 @@ public final class UpdateManager {
     private Update parse(JSONObject root) throws IOException {
         JSONObject assets = root.optJSONObject("assets");
         if (assets == null) return null;
+        int installed = installedVersionCode();
         for (String key : candidateKeys()) {
             JSONObject entry = assets.optJSONObject(key);
             if (entry == null) continue;
             int code = entry.optInt("versionCode", 0);
-            if (code <= Version.CODE) return null;
+            if (code <= installed) return null;
             String sha256 = entry.optString("sha256", "").toLowerCase(Locale.US);
             if (sha256.length() != 64) {
                 throw new IOException("updates.json sem sha256 para " + key);
@@ -448,8 +451,26 @@ public final class UpdateManager {
         return hex.toString();
     }
 
-    private static String installed() {
-        return Version.NAME + " (" + Version.CODE + ")";
+    private String installed() {
+        try {
+            PackageInfo info = context.getPackageManager()
+                    .getPackageInfo(context.getPackageName(), 0);
+            String name = info.versionName != null ? info.versionName : Version.NAME;
+            return name + " (" + info.versionCode + ")";
+        } catch (Throwable t) {
+            return Version.NAME + " (" + Version.CODE + ")";
+        }
+    }
+
+    /** The versionCode the package manager reports for this installation. */
+    private int installedVersionCode() {
+        try {
+            PackageInfo info = context.getPackageManager()
+                    .getPackageInfo(context.getPackageName(), 0);
+            return info.versionCode;
+        } catch (Throwable t) {
+            return Version.CODE;
+        }
     }
 
     private static String displayVersion(String version, int code) {

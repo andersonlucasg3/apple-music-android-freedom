@@ -3,7 +3,6 @@ package com.anderson.applemusic.one;
 import android.app.Activity;
 import android.app.Application;
 import android.content.Intent;
-import android.content.pm.PackageInfo;
 import android.content.pm.PackageInstaller;
 import android.content.pm.PackageManager;
 import android.os.Build;
@@ -72,9 +71,9 @@ public final class OneActivity extends Activity
     private static final long SIGN_IN_SETTLE_MS = 400L;
     /** How often the sign-in sheet state is checked while the engine host is on top. */
     private static final long AUTH_POLL_MS = 250L;
-    /** Time to wait before reconnecting the MediaBrowser to the restarted engine service. */
-    private static final long RECONNECT_DELAY_MS = 700L;
-    private static final int MAX_RECONNECT_ATTEMPTS = 4;
+    /** MediaBrowser reconnection backoff: 0.5 s, 1 s, 2 s, 4 s, 8 s, ... capped at 30 s. */
+    private static final long RECONNECT_INITIAL_MS = 500L;
+    private static final long RECONNECT_MAX_MS = 30000L;
 
     private static final long TICK_MS = 500L;
     private static final long ACTION_TIMEOUT_MS = 2500L;
@@ -122,8 +121,14 @@ public final class OneActivity extends Activity
     private boolean refreshOnResume;
     /** A reconnect to the engine service is wanted (it may still be restarting). */
     private boolean reconnecting;
+    /** A reconnect is pending while the activity is stopped; it restarts in onStart. */
+    private boolean reconnectPending;
+    /** Current backoff step; reset when the MediaBrowser connects. */
+    private long reconnectDelay = RECONNECT_INITIAL_MS;
+    private boolean started;
+    private boolean tickerRunning;
+    private boolean destroyed;
     private boolean refreshingCatalog;
-    private int refreshAttempts;
     private Runnable authPoll;
     private final Runnable reconnect = new Runnable() {
         @Override
@@ -208,6 +213,35 @@ public final class OneActivity extends Activity
     }
 
     /**
+     * Resumes the position ticker and any reconnection that was paused while the activity
+     * was stopped. Nothing polls the engine in the background.
+     */
+    @Override
+    protected void onStart() {
+        super.onStart();
+        started = true;
+        if (!tickerRunning) {
+            tickerRunning = true;
+            main.removeCallbacks(ticker);
+            main.postDelayed(ticker, TICK_MS);
+        }
+        if (reconnectPending) {
+            reconnectPending = false;
+            scheduleReconnect();
+        }
+    }
+
+    @Override
+    protected void onStop() {
+        started = false;
+        tickerRunning = false;
+        main.removeCallbacks(ticker);
+        main.removeCallbacks(reconnect);
+        reconnectPending = reconnecting;
+        super.onStop();
+    }
+
+    /**
      * Overlays that do not depend on the browse tree (account, updates, the catalogue
      * search) are reopened right away; the tab and the browse/detail overlays wait for
      * {@code __AUTO_ROOT__} so they subscribe to a connected {@link MediaClient}.
@@ -258,11 +292,31 @@ public final class OneActivity extends Activity
         resetBrowse();
         refreshingCatalog = true;
         reconnecting = true;
-        refreshAttempts = 0;
+        reconnectDelay = RECONNECT_INITIAL_MS;
         setStatus("Atualizando o Apple Music…");
         client.disconnect();
+        scheduleReconnect();
+    }
+
+    /**
+     * Retries the MediaBrowser connection with exponential backoff (0.5 s doubling to
+     * 30 s) while the activity is started. A failed/suspended service, a destroyed
+     * session or an empty catalogue all land here, so a restarted engine is picked up
+     * without the user reopening the app.
+     */
+    private void scheduleReconnect() {
+        if (client == null || destroyed) return;
+        reconnecting = true;
         main.removeCallbacks(reconnect);
-        main.postDelayed(reconnect, RECONNECT_DELAY_MS);
+        if (!started) {
+            // No polling in the background: resume the attempt in onStart().
+            reconnectPending = true;
+            return;
+        }
+        reconnectPending = false;
+        Log.i(TAG, "reconnect in " + reconnectDelay + " ms");
+        main.postDelayed(reconnect, reconnectDelay);
+        reconnectDelay = Math.min(reconnectDelay * 2L, RECONNECT_MAX_MS);
     }
 
     /** Drops the previous account's tabs, shelves, drill-down and covers. */
@@ -431,7 +485,6 @@ public final class OneActivity extends Activity
         setContentView(rootFrame);
         registerBackHandler();
         refreshAccessibility();
-        main.postDelayed(ticker, TICK_MS);
     }
 
     /**
@@ -481,6 +534,11 @@ public final class OneActivity extends Activity
     public void onConnected() {
         Log.i(TAG, "connected");
         reconnecting = false;
+        reconnectPending = false;
+        main.removeCallbacks(reconnect);
+        // During a post-login rebuild the catalogue is still coming; only reset the
+        // backoff once a plain service restart has reconnected.
+        if (!refreshingCatalog) reconnectDelay = RECONNECT_INITIAL_MS;
         setStatus("Conectado ao Apple Music");
         loadAsync(MediaClient.AUTO_ROOT);
     }
@@ -488,17 +546,8 @@ public final class OneActivity extends Activity
     @Override
     public void onDisconnected(String message) {
         Log.w(TAG, "disconnected: " + message);
-        if ((reconnecting || refreshingCatalog) && refreshAttempts < MAX_RECONNECT_ATTEMPTS) {
-            refreshAttempts++;
-            reconnecting = true;
-            setStatus("Reconectando ao Apple Music…");
-            main.removeCallbacks(reconnect);
-            main.postDelayed(reconnect, RECONNECT_DELAY_MS);
-            return;
-        }
-        reconnecting = false;
-        refreshingCatalog = false;
-        setStatus(message);
+        setStatus("Reconectando ao Apple Music…");
+        scheduleReconnect();
     }
 
     @Override
@@ -544,7 +593,7 @@ public final class OneActivity extends Activity
         }
         rootReceived = true;
         refreshingCatalog = false;
-        refreshAttempts = 0;
+        reconnectDelay = RECONNECT_INITIAL_MS;
         tabs.clear();
         tabs.addAll(found);
         String[] labels = new String[tabs.size()];
@@ -619,16 +668,13 @@ public final class OneActivity extends Activity
     }
 
     /**
-     * The engine service may still be restarting after sign-in; keep the browse session
-     * reconnecting until the catalogue arrives or the attempts run out.
+     * The engine service may still be restarting after sign-in; keep retrying (with the
+     * same backoff) until the catalogue arrives.
      */
     private boolean retryCatalog() {
-        if (!refreshingCatalog || refreshAttempts >= MAX_RECONNECT_ATTEMPTS) return false;
-        refreshAttempts++;
-        reconnecting = true;
+        if (!refreshingCatalog) return false;
         setStatus("Aguardando o catálogo do Apple Music…");
-        main.removeCallbacks(reconnect);
-        main.postDelayed(reconnect, RECONNECT_DELAY_MS);
+        scheduleReconnect();
         return true;
     }
 
@@ -1130,6 +1176,7 @@ public final class OneActivity extends Activity
         if (detailScreen != null) detailScreen.updatePlayback(snapshot);
     }
 
+    /** Advances the position only; metadata and queue arrive through the callbacks. */
     private final Runnable ticker = new Runnable() {
         @Override
         public void run() {
@@ -1387,12 +1434,7 @@ public final class OneActivity extends Activity
     }
 
     private String engineVersion() {
-        try {
-            PackageInfo info = getPackageManager().getPackageInfo(getPackageName(), 0);
-            return info.versionName + " (" + info.versionCode + ")";
-        } catch (Throwable t) {
-            return "?";
-        }
+        return Version.ENGINE;
     }
 
     /**
@@ -1562,6 +1604,10 @@ public final class OneActivity extends Activity
 
     @Override
     protected void onDestroy() {
+        started = false;
+        tickerRunning = false;
+        reconnectPending = false;
+        destroyed = true;
         main.removeCallbacks(ticker);
         main.removeCallbacks(reconnect);
         if (authPoll != null) main.removeCallbacks(authPoll);

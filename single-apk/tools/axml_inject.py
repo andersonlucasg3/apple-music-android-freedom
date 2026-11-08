@@ -6,8 +6,11 @@ is risky (the manifest references dozens of app resources), so this tool edits t
 binary chunks in place:
 
   * appends the new strings (activity class, MAIN action, LAUNCHER category,
-    permission) to the existing string pool, keeping every existing index stable
-    (the resource map of the manifest indexes attribute-name strings by position);
+    permission, versionName) to the existing string pool, keeping every existing
+    index stable (the resource map of the manifest indexes attribute-name strings
+    by position);
+  * rewrites the manifest's {@code versionName}/{@code versionCode} attributes
+    (the engine's 7.0.0/1614 must not stay visible: the installed package is the UI);
   * inserts <uses-permission> chunks (when requested) before <application>;
   * inserts the <activity><intent-filter>...</intent-filter></activity> chunks as
     the first child of <application>;
@@ -19,7 +22,8 @@ byte for byte.
 Usage:
     python axml_inject.py --in AndroidManifest.xml --out patched.xml \
         --activity com.example.ProbeActivity \
-        --permission android.permission.REQUEST_INSTALL_PACKAGES
+        --permission android.permission.REQUEST_INSTALL_PACKAGES \
+        --version-name 1.9.10 --version-code 10910
     python axml_inject.py --in AndroidManifest.xml --inspect
 """
 
@@ -38,6 +42,7 @@ SORTED_FLAG = 0x1
 
 TYPE_REFERENCE = 0x01
 TYPE_STRING = 0x03
+TYPE_INT = 0x10
 TYPE_BOOL = 0x12
 NO_ENTRY = 0xFFFFFFFF
 
@@ -202,7 +207,55 @@ def declares_uses_permission(chunks, data, pool, name_attr, permission):
     return False
 
 
-def inject(data, activity_class, label=None, theme_res_id=None, permissions=None):
+def patch_manifest_version(data, chunks, pool, version_name, version_code):
+    """Rewrites the root <manifest> versionName/versionCode attributes in place.
+
+    ``data`` is a bytearray copy of the file; the string pool is mutated here (the new
+    versionName is appended, keeping every existing index) and is rebuilt by the caller.
+    """
+    manifest_pos = None
+    for pos, ctype, _hdr, _size in chunks:
+        if ctype != RES_XML_START_ELEMENT_TYPE:
+            continue
+        if pool.strings[rd32(data, pos + 20)] == "manifest":
+            manifest_pos = pos
+            break
+    if manifest_pos is None:
+        raise ValueError("<manifest> not found")
+
+    wanted = {}
+    if version_name is not None:
+        wanted["versionName"] = ("name", version_name)
+    if version_code is not None:
+        wanted["versionCode"] = ("code", int(version_code))
+
+    attr_start = rd16(data, manifest_pos + 24)
+    attr_count = rd16(data, manifest_pos + 28)
+    found = set()
+    for i in range(attr_count):
+        off = manifest_pos + 16 + attr_start + i * 20
+        attr = pool.strings[rd32(data, off + 4)]
+        if attr not in wanted:
+            continue
+        kind, value = wanted[attr]
+        if kind == "name":
+            index = pool.add(value)
+            struct.pack_into("<I", data, off + 8, index)
+            data[off + 15] = TYPE_STRING
+            struct.pack_into("<I", data, off + 16, index)
+        else:
+            struct.pack_into("<I", data, off + 8, NO_ENTRY)
+            data[off + 15] = TYPE_INT
+            struct.pack_into("<I", data, off + 16, value & 0xFFFFFFFF)
+        found.add(attr)
+    missing = sorted(set(wanted) - found)
+    if missing:
+        raise ValueError("manifest has no %s attribute to rewrite" % ", ".join(missing))
+    return data
+
+
+def inject(data, activity_class, label=None, theme_res_id=None, permissions=None,
+           version_name=None, version_code=None):
     if rd16(data, 0) != RES_XML_TYPE:
         raise ValueError("not a binary XML file")
     header_size = rd16(data, 2)
@@ -282,12 +335,17 @@ def inject(data, activity_class, label=None, theme_res_id=None, permissions=None
         end_element(pool.index_of("activity")),
     ])
 
+    patched = bytearray(data)
+    if version_name is not None or version_code is not None:
+        patched = patch_manifest_version(patched, chunks, pool, version_name, version_code)
+
     pool_end = pool_pos + pool_size
     app_start = chunks[app_idx][0]
     app_end = app_start + chunks[app_idx][3]
     pool_chunk = pool.build()
-    out = (data[:pool_pos] + pool_chunk + data[pool_end:app_start] + permission_chunks
-           + data[app_start:app_end] + insert + data[app_end:])
+    out = (bytes(patched[:pool_pos]) + pool_chunk + bytes(patched[pool_end:app_start])
+           + permission_chunks + bytes(patched[app_start:app_end]) + insert
+           + bytes(patched[app_end:]))
     out = out[:4] + struct.pack("<I", len(out)) + out[8:]
     return out, pool
 
@@ -303,6 +361,10 @@ def main():
     ap.add_argument("--permission", action="append", default=[],
                     help="uses-permission name to add (repeatable), e.g. "
                          "android.permission.REQUEST_INSTALL_PACKAGES")
+    ap.add_argument("--version-name", default=None,
+                    help="versionName to write into <manifest> (e.g. 1.9.10)")
+    ap.add_argument("--version-code", type=int, default=None,
+                    help="versionCode to write into <manifest> (e.g. 10910)")
     ap.add_argument("--inspect", action="store_true")
     args = ap.parse_args()
 
@@ -326,10 +388,12 @@ def main():
     if not args.out:
         ap.error("--out is required unless --inspect is used")
     theme = int(args.theme, 0) if args.theme else None
-    out, pool = inject(data, args.activity, args.label, theme, args.permission)
+    out, pool = inject(data, args.activity, args.label, theme, args.permission,
+                       args.version_name, args.version_code)
     open(args.out, "wb").write(out)
-    print("wrote %s (%d bytes, pool strings %d, permissions %s)"
-          % (args.out, len(out), pool.count, args.permission))
+    print("wrote %s (%d bytes, pool strings %d, permissions %s, version %s/%s)"
+          % (args.out, len(out), pool.count, args.permission, args.version_name,
+             args.version_code))
     return 0
 
 

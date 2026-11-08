@@ -83,8 +83,8 @@ Tokens espelhados dos companions Compose (`tv-app/TvTheme.kt`, `car-app/Theme.kt
 ## Build
 
 ```powershell
-./single-apk/build-one-apk.ps1 -PoneVersion 1.9.8          # versionCode 10908 derivado
-./single-apk/build-one-apk.ps1 -Abi arm64,arm32 -PoneVersion 1.9.8
+./single-apk/build-one-apk.ps1 -PoneVersion 1.9.10         # versionCode 10910 derivado
+./single-apk/build-one-apk.ps1 -Abi arm64,arm32 -PoneVersion 1.9.10
 ```
 
 O build compila a UI uma vez e gera, para cada ABI:
@@ -95,13 +95,18 @@ O build compila a UI uma vez e gera, para cada ABI:
 | arm32 | `.pipeline/rel160/AppleMusic-engine-arm32.apk` | `single-apk/out-one/AppleMusic-one-arm32.apk` |
 | x86 | `.pipeline/emulator/AppleMusic-engine-x86.apk` | `single-apk/out-one/AppleMusic-one-x86.apk` |
 
-Antes do `javac` o build gera `out-one/generated/.../Version.java` com `NAME = -PoneVersion`
-e `CODE = -PoneVersionCode` (derivado como `MAJOR*10000+MINOR*100+PATCH`); é essa versão da
-UI — não o `7.0.0` do engine — que aparece no painel de Atualizações e que o updater
-compara.
+Antes do `javac` o build gera `out-one/generated/.../Version.java` com `NAME = -PoneVersion`,
+`CODE = -PoneVersionCode` (derivado como `MAJOR*10000+MINOR*100+PATCH`) e `ENGINE`, o
+`versionName/versionCode` lido do APK de engine de entrada (o painel de Atualizações
+continua mostrando `7.0.0 (1614)`). Desde a 1.9.10 o build também **grava essa versão da
+UI no `<manifest>` do APK** (`--version-name`/`--version-code` do `axml_inject.py`): o
+pacote instalado deixa de se chamar 7.0.0/1614, e o updater compara
+`one-<abi>.versionCode` com o `versionCode` que o **PackageManager** reporta para o
+pacote instalado — o mesmo que `dumpsys` e `aapt2 dump badging` mostram.
 
 Passos por ABI: extrai o `AndroidManifest.xml` binário → injeta a activity (MAIN/LAUNCHER +
-tema) e `<uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES"/>` →
+tema), a `<uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES"/>` e
+o `versionName`/`versionCode` da UI →
 empacota o dex novo como `classesN.dex` **e os assets em `assets/one/`** →
 `zipalign -p 4` → `apksigner` com `tools/tv-app-signing.p12` (alias `morphe`, senha
 `Morphe`) → verifica assinatura, `launchable-activity`, presença de
@@ -115,7 +120,7 @@ Auditoria do dex (falha o build se sobrar classe de fora):
 
 ```
 dexdump -l plain single-apk/out-one/dex/classes.dex | findstr "Class descriptor"
-# 232 classes, todas Lcom/anderson/applemusic/one/...
+# 252 classes, todas Lcom/anderson/applemusic/one/...
 ```
 
 ## Instalar / abrir
@@ -290,7 +295,7 @@ Com targetSdk 36 o *predictive back* vem ligado: o sistema deixa de chamar
 - **Conta**: com sessão ativa, mostra o **perfil** do engine (avatar com a inicial,
   nome, Apple ID e assinatura); sem sessão, mostra o convite e o botão oficial de login
   do Apple ID (fluxo acima). O estado é relido a cada abertura do painel.
-- **Atualizações**: painel com versão instalada (`1.9.8 (10908)`), versão do engine,
+- **Atualizações**: painel com versão instalada (`1.9.10 (10910)`), versão do engine,
   mensagem de estado, progresso, Verificar / Baixar e instalar / Cancelar / Fechar.
   Compara `one-<abi>.versionCode`, baixa, confere SHA-256 e instala via `PackageInstaller`.
 - **Estados**: vazio, erro e sem conexão com ícone e texto (`EmptyState`) em Início,
@@ -607,7 +612,61 @@ Teste JVM do mapeamento (fora do APK, sem dependências):
 ```
 
 Medido no celular: `updates.json: sem atualização para esta ABI (arm64-v8a, instalada
-1.9.8 (10908))`.
+1.9.10 (10910))`.
+
+### Versionamento real e reconexão (1.9.10)
+
+**Versão do pacote.** O `<manifest>` do APK único agora leva o `versionName`/`versionCode`
+da UI (1.9.10 / 10910), gravados pelo `axml_inject.py` sem rebuild do AXML:
+
+```
+$ aapt2 dump badging single-apk/out-one/AppleMusic-one-arm64.apk | head -1
+package: name='com.apple.android.music' versionCode='10910' versionName='1.9.10' ...
+$ adb -s RXCX100BZ5J shell dumpsys package com.apple.android.music | grep -E "version(Name|Code)|firstInstall"
+    versionCode=10910 ...
+    versionName=1.9.10
+    firstInstallTime=2026-11-05 14:51:14   # preservado pelo install -r
+```
+
+O `UpdateManager` passou a comparar `one-<abi>.versionCode` com o versionCode do
+**pacote instalado** (PackageManager), não com `Version.CODE`; o painel mostra
+`Instalada 1.9.10 (10910)` / `Engine 7.0.0 (1614)` (o engine é capturado do APK de entrada
+e vira `Version.ENGINE`). Log do check:
+`updates.json: sem atualização para esta ABI (arm64-v8a, instalada 1.9.10 (10910))`.
+O CI passa `--version-name "$VERSION" --version-code "$VERSION_CODE"` e **falha o release**
+se o badging dos `one-*` não tiver os dois valores.
+
+**Lifecycle do `MediaBrowser`.** `OneActivity` reconecta com backoff exponencial
+(0,5 s → 1 s → 2 s → 4 s → 8 s → … máx. 30 s) em `onConnectionFailed`,
+`onConnectionSuspended`, `onSessionDestroyed` e após a volta do engine; o backoff só zera
+quando o browser conecta ou o catálogo chega. Em `onStop` o ticker e o reconnect pendente
+são removidos (`reconnectPending`) e voltam em `onStart` — nada consulta o engine em
+background. A fila deixou de ser lida a cada 500 ms: `MediaController.Callback.onQueueChanged`
+(atualizado por `emitPlayback(true)`) e os callbacks de estado/metadata atualizam a fila; o
+tick de 500 ms agora só relê a posição (`emitPlayback(false)`, fila em cache).
+
+**Como o teste de reconexão foi feito.** O `MediaPlaybackService` roda no **mesmo processo**
+do companion (e o shell não pode desabilitar componente de pacote não-debuggable), então
+matar só o serviço derruba a activity junto. O caminho de falha foi exercitado com um seam
+temporário (`connect()` recusando as 3 primeiras tentativas, removido antes do commit) num
+build x86 instalado no `emulator-5554`: o log mostra
+`reconnect in 500 ms` → `1000 ms` → `2000 ms` → `MediaBrowser connected` e `root arrived`,
+sem reiniciar a activity (`evidence/wave2b-reconnect-backoff-tempbuild.txt`).
+O serviço real também foi parado 50× com `am stopservice` (durante rotação) sem crash:
+`dumpsys activity` mostrou o browser voltando e a fila de 55 faixas restaurada. Limitação:
+não foi possível matar o serviço **com o playback em andamento sem matar o próprio app**.
+
+**Background.** Com o app em `HOME` e tocando, `dumpsys activity activities` mostra
+`OneActivity` parada; `MEDIA_NEXT` no background gerou `queue changed`/`queue size=53` no
+log e a tela reabriu já com a faixa nova (`wave2b-background-queue.txt`,
+`wave2b-phone-after-background.png`). `dumpsys cpuinfo` no background fica dominado pelo
+decode de áudio (29%), sem leituras periódicas do ticker (removido em `onStop`).
+
+Evidências: `wave2b-phone-updates.png` / `.xml` (Instalada 1.9.10/Engine 7.0.0),
+`wave2b-version-badging.txt` (badging das duas ABIs + `dumpsys` dos dois devices),
+`wave2b-phone-account.png` (conta preservada), `wave2b-phone-home.png`,
+`wave2b-phone-player.png`, `wave2b-reconnect-backoff-tempbuild.txt`,
+`wave2b-background-queue.txt`, `wave2b-phone-after-background.png`.
 
 ## Validado
 
@@ -634,6 +693,8 @@ Medido no celular: `updates.json: sem atualização para esta ABI (arm64-v8a, in
 | `emulator-5554` (TV x86, 1.9.8, a11y) | Instalado por cima. Player e **Ações** com **22/10** e **14/5** nós/clicáveis, **0 sem rótulo** e nenhuma camada de baixo exposta; Início com 14 clicáveis, todos rotulados; `logcat -b crash` vazio. |
 | `RXCX100BZ5J` (arm64, 1.9.9, performance) | Instalado por cima. Início abre com **6/16** prateleiras (`children` 6, `perf home shelves=6/16 … views=563`); rolar carrega 12 e 16 em lotes; **Atualizar** com a Home rolada repovoa e mantém o enquadramento (`wave2a-refresh-scroll-after.png`); **Biblioteca → Álbuns** (281) rola em `ListView` com 9 linhas/55 views e `gfxinfo` 0,23% janky; filtro `a` (282) com 7 linhas/41 views; girado para landscape e de volta no mesmo bloco da lista; `logcat -b crash` vazio. |
 | `emulator-5554` (TV x86, 1.9.9, performance/D-pad) | Instalado por cima. Início **6/16** e DOWN pelos cards carrega os lotes até 16; DOWN da aba → hero → cards; lista de 281 com 7 linhas e foco por linha (ENTER abre “A Decade and a Half”); fila com 29 faixas/5 linhas/31 views, foco na linha atual e ENTER = `skipToQueueItem 1` (metadata `Rulers of the Mind`); `logcat -b crash` vazio. |
+| `RXCX100BZ5J` (arm64, 1.9.10, versão/reconexão) | Instalado por cima (`install -r`), `firstInstallTime` de 2026-11-05 preservado. `dumpsys package` = `versionCode=10910 versionName=1.9.10`; badging idem; painel Atualizações com `Instalada 1.9.10 (10910)` / `Engine 7.0.0 (1614)` e log `updates.json: sem atualização para esta ABI (arm64-v8a, instalada 1.9.10 (10910))`. Faixas: `MEDIA_NEXT` no background atualizou a fila por callback (`queue changed`, 55→54→53) e o player voltou com a faixa nova; `OneActivity` parada em `dumpsys activity`; rotação 2× reconectou o browser e restaurou a fila de 55 itens; `logcat -b crash` vazio. |
+| `emulator-5554` (TV x86, 1.9.10, backoff) | APK x86 instalado por cima. Com um seam temporário de falha de conexão (removido antes do commit): `reconnect in 500 ms` → `1000 ms` → `2000 ms` → `MediaBrowser connected`/`root arrived`, sem reiniciar a activity (`wave2b-reconnect-backoff-tempbuild.txt`); `logcat -b crash` vazio. |
 
 Evidências lado a lado com as referências dos companions
 (`.pipeline/revamp-tv/`, `.pipeline/revamp-car/` e as fotos de celular em
